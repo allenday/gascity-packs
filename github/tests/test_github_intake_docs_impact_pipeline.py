@@ -49,6 +49,73 @@ def envelope(raw: bytes, candidate: dict[str, object]) -> dict[str, object]:
 
 
 class DocsImpactPipelineTests(unittest.TestCase):
+    def test_revision_evidence_requires_same_remote_head_before_and_after_file_fetch(self) -> None:
+        events: list[str] = []
+
+        def remote_head(*_args: object) -> str:
+            events.append("head")
+            return "a" * 40
+
+        def changed_files(*_args: object) -> list[dict[str, str]]:
+            events.append("files")
+            return [{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}]
+
+        with mock.patch.object(
+            pipeline.common, "pull_request_head_sha_with_token", side_effect=remote_head
+        ), mock.patch.object(
+            pipeline.common, "list_pull_request_files_with_token", side_effect=changed_files
+        ):
+            bundle = pipeline.evidence_bundle("token", pipeline.service.github_pr_context(payload()))
+
+        self.assertEqual(events, ["head", "files", "head"])
+        self.assertEqual(bundle["head_sha"], "a" * 40)
+
+    def test_head_change_during_evidence_fetch_fails_before_source_or_queue_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            pipeline.common,
+            "pull_request_head_sha_with_token",
+            side_effect=["a" * 40, "b" * 40],
+        ), mock.patch.object(
+            pipeline.common,
+            "list_pull_request_files_with_token",
+            return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],
+        ), mock.patch.object(pipeline.docs_impact, "evaluate") as evaluate:
+            root = pathlib.Path(temp_dir)
+            result = pipeline.run_handoff(
+                payload(), "delivery-1", "token", root / "assignments", root / "artifacts", wait_seconds=0
+            )
+
+        self.assertEqual(result, {"status": "ignored", "reason": "head_sha_changed", "head_sha": "a" * 40})
+        evaluate.assert_not_called()
+
+    def test_oversized_patch_or_total_evidence_fails_before_queueing(self) -> None:
+        cases = {
+            "single_patch": [{
+                "filename": "docs/large.md",
+                "patch": "x" * (pipeline.MAX_EVIDENCE_PATCH_BYTES + 1),
+            }],
+            "aggregate": [{
+                "filename": f"docs/{index}.md",
+                "patch": "x" * (pipeline.MAX_EVIDENCE_PATCH_BYTES - 1024),
+            } for index in range(5)],
+        }
+        for name, files in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+                pipeline.common,
+                "pull_request_head_sha_with_token",
+                side_effect=["a" * 40, "a" * 40],
+            ), mock.patch.object(
+                pipeline.common, "list_pull_request_files_with_token", return_value=files
+            ), mock.patch.object(pipeline.docs_impact, "evaluate") as evaluate:
+                root = pathlib.Path(temp_dir)
+                result = pipeline.run_handoff(
+                    payload(), "delivery-1", "token", root / "assignments", root / "artifacts", wait_seconds=0
+                )
+
+            self.assertEqual(result["status"], "ignored")
+            self.assertEqual(result["reason"], "evidence_unsafe")
+            evaluate.assert_not_called()
+
     def test_candidate_requires_exact_assignment_digest_identity_and_skill(self) -> None:
         raw = json.dumps(assignment()).encode("utf-8")
         valid = envelope(raw, review())
@@ -93,6 +160,8 @@ class DocsImpactPipelineTests(unittest.TestCase):
                     "head_sha": "a" * 40,
                 }
                 with mock.patch.object(
+                    pipeline.common, "pull_request_head_sha_with_token", return_value="a" * 40
+                ), mock.patch.object(
                     pipeline.common, "list_pull_request_files_with_token", return_value=[]
                 ), mock.patch.object(
                     pipeline.docs_impact, "evaluate", return_value=queued
@@ -126,6 +195,8 @@ class DocsImpactPipelineTests(unittest.TestCase):
                 "GC_SERVICE_STATE_ROOT": str(root / "state"),
                 "GC_GITHUB_DOCS_PATCH_SNAPSHOT_DIR": str(assignments),
             }), mock.patch.object(
+                pipeline.common, "pull_request_head_sha_with_token", return_value="a" * 40
+            ), mock.patch.object(
                 pipeline.common,
                 "list_pull_request_files_with_token",
                 return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],

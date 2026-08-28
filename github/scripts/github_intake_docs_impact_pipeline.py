@@ -26,6 +26,16 @@ import github_intake_docs_patch_worker as patch_worker
 import github_intake_service as service
 
 QUEUE_ARTIFACT_SCHEMA_VERSION = 1
+MAX_EVIDENCE_PATCH_BYTES = patch_worker.MAX_EVIDENCE_PATCH_BYTES
+MAX_EVIDENCE_TOTAL_BYTES = patch_worker.MAX_EVIDENCE_TOTAL_BYTES
+
+
+class RevisionChangedError(ValueError):
+    """The mutable pull request no longer has the webhook revision."""
+
+
+class UnsafeEvidenceError(ValueError):
+    """The pull request evidence cannot enter the bounded review pipeline."""
 
 
 def changed_paths(token: str, context: dict[str, str]) -> list[str]:
@@ -38,12 +48,30 @@ def changed_paths(token: str, context: dict[str, str]) -> list[str]:
 
 def evidence_bundle(token: str, context: dict[str, str]) -> dict[str, Any]:
     """Bound the reviewer input to textual PR evidence at the exact head SHA."""
+    before = common.pull_request_head_sha_with_token(
+        token, context["owner"], context["repo"], context["number"],
+    )
+    if before != context["head_sha"]:
+        raise RevisionChangedError("pull request head differs from webhook revision")
     files = common.list_pull_request_files_with_token(token, context["owner"], context["repo"], context["number"])
     entries: list[dict[str, str]] = []
+    total_evidence_bytes = 0
     for file in files[:100]:
         path, patch = str(file.get("filename", "")).strip(), file.get("patch")
         if path and isinstance(patch, str) and patch:
-            entries.append({"path": path, "reference": f"github://{context['repository']}/blob/{context['head_sha']}/{path}", "patch": patch})
+            reference = f"github://{context['repository']}/blob/{context['head_sha']}/{path}"
+            patch_bytes = len(patch.encode("utf-8"))
+            if patch_bytes > MAX_EVIDENCE_PATCH_BYTES:
+                raise UnsafeEvidenceError("pull request patch exceeds the evidence byte limit")
+            total_evidence_bytes += sum(len(text.encode("utf-8")) for text in (path, reference, patch))
+            if total_evidence_bytes > MAX_EVIDENCE_TOTAL_BYTES:
+                raise UnsafeEvidenceError("pull request total evidence exceeds the byte limit")
+            entries.append({"path": path, "reference": reference, "patch": patch})
+    after = common.pull_request_head_sha_with_token(
+        token, context["owner"], context["repo"], context["number"],
+    )
+    if after != before or after != context["head_sha"]:
+        raise RevisionChangedError("pull request head changed while evidence was collected")
     entries.sort(key=lambda value: value["path"])
     return {"head_sha": context["head_sha"], "files": entries}
 
@@ -118,7 +146,12 @@ def run_handoff(
 ) -> dict[str, Any]:
     """Queue, consume, project, and publish one immutable PR revision."""
     context = service.github_pr_context(payload)
-    bundle = evidence_bundle(token, context)
+    try:
+        bundle = evidence_bundle(token, context)
+    except RevisionChangedError:
+        return {"status": "ignored", "reason": "head_sha_changed", "head_sha": context["head_sha"]}
+    except UnsafeEvidenceError:
+        return {"status": "ignored", "reason": "evidence_unsafe", "head_sha": context["head_sha"]}
     queued = docs_impact.evaluate(payload, delivery_id, token, paths=[item["path"] for item in bundle["files"]], evidence_bundle=bundle)
     try:
         assignment_file = pathlib.Path(str(queued["assignment_path"]))

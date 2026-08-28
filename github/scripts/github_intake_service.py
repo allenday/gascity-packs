@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import github_intake_common as common
+import github_intake_docs_patch_worker as docs_patch_worker
 
 PROCESSING_LOCK = threading.Lock()
 ACCEPTANCE_LOCK = threading.Lock()
@@ -1075,28 +1076,11 @@ def docs_impact_run_lock(context: dict[str, str]) -> Any:
 
 def is_complete_docs_impact_assignment(value: Any, identity: dict[str, Any]) -> bool:
     """Accept only a canonical descriptor for the source being queued."""
-    if not isinstance(value, dict) or set(value) != {
-        "schema_version", "kind", "identity", "agent_skill", "evidence_bundle",
-    }:
+    try:
+        canonical = docs_patch_worker.validate_assignment(value)
+    except (TypeError, ValueError):
         return False
-    persisted_identity = value["identity"]
-    evidence = value["evidence_bundle"]
-    return (
-        type(value["schema_version"]) is int
-        and value["schema_version"] == DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION
-        and value["kind"] == "github-pr-docs-impact-assignment"
-        and isinstance(persisted_identity, dict)
-        and persisted_identity == identity
-        and all(isinstance(persisted_identity[field], str) for field in (
-            "repository_id", "repository", "head_sha", "source_key",
-        ))
-        and type(persisted_identity["pr_number"]) is int
-        and value["agent_skill"] == DOCS_IMPACT_AGENT_SKILL
-        and isinstance(evidence, dict)
-        and evidence.get("head_sha") == identity["head_sha"]
-        and isinstance(evidence.get("files"), list)
-        and 0 < len(evidence["files"]) <= 100
-    )
+    return canonical == value and canonical["identity"] == identity
 
 
 def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: list[str], evidence_bundle: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1125,6 +1109,10 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
         "agent_skill": DOCS_IMPACT_AGENT_SKILL,
         "evidence_bundle": evidence_bundle,
     }
+    try:
+        assignment = docs_patch_worker.validate_assignment(assignment)
+    except (TypeError, ValueError):
+        return {"status": "failed", "reason": "evidence_invalid"}
     assignment_path = docs_impact_assignment_path(context)
     with docs_impact_assignment_lock(assignment_path):
         existing = common.read_json(assignment_path)

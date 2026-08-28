@@ -28,6 +28,8 @@ ASSIGNMENT_IDENTITY_FIELDS = {"repository_id", "repository", "pr_number", "head_
 AGENT_SKILL = "developer-experience-techdocs"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 MAX_ADAPTER_OUTPUT_BYTES = 1_048_576
+MAX_EVIDENCE_PATCH_BYTES = 64 * 1024
+MAX_EVIDENCE_TOTAL_BYTES = 256 * 1024
 FORBIDDEN_CREDENTIAL_ENV = (
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -78,6 +80,7 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     ):
         raise ValueError("evidence_bundle must be bounded and bound to the assignment SHA")
     files: list[dict[str, str]] = []
+    total_evidence_bytes = 0
     for item in evidence_bundle["files"]:
         if not isinstance(item, dict) or set(item) != {"path", "reference", "patch"}:
             raise ValueError("evidence_bundle files must have exact fields")
@@ -86,6 +89,12 @@ def validate_assignment(value: Any) -> dict[str, Any]:
         patch = item["patch"]
         if not isinstance(patch, str) or not patch:
             raise ValueError("evidence_bundle.files.patch must be non-empty text")
+        patch_bytes = len(patch.encode("utf-8"))
+        if patch_bytes > MAX_EVIDENCE_PATCH_BYTES:
+            raise ValueError("evidence_bundle.files.patch is too large")
+        total_evidence_bytes += sum(len(text.encode("utf-8")) for text in (path, reference, patch))
+        if total_evidence_bytes > MAX_EVIDENCE_TOTAL_BYTES:
+            raise ValueError("evidence_bundle total evidence is too large")
         if reference != f"github://{repository}/blob/{head_sha}/{path}":
             raise ValueError("evidence bundle reference must be immutable and SHA-pinned")
         files.append({"path": path, "reference": reference, "patch": patch})

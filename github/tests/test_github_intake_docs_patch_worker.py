@@ -111,6 +111,21 @@ def write_skill(root: pathlib.Path) -> pathlib.Path:
 
 
 class DocsPatchWorkerTests(unittest.TestCase):
+    def test_assignment_enforces_patch_and_total_evidence_byte_limits(self) -> None:
+        worker_module = __import__("github_intake_docs_patch_worker")
+        oversized = assignment()
+        oversized["evidence_bundle"]["files"][0]["patch"] = "x" * (
+            worker_module.MAX_EVIDENCE_PATCH_BYTES + 1
+        )
+        with self.assertRaisesRegex(ValueError, "patch.*too large"):
+            worker_module.validate_assignment(oversized)
+
+        aggregate = assignment(changed_paths=[f"docs/{index}.md" for index in range(5)])
+        for item in aggregate["evidence_bundle"]["files"]:
+            item["patch"] = "x" * (worker_module.MAX_EVIDENCE_PATCH_BYTES - 1024)
+        with self.assertRaisesRegex(ValueError, "total evidence.*too large"):
+            worker_module.validate_assignment(aggregate)
+
     def test_assignment_rejects_paths_only_without_sha_pinned_evidence(self) -> None:
         worker_module = __import__("github_intake_docs_patch_worker")
         self.assertEqual(worker_module.validate_assignment(assignment())["evidence_bundle"]["head_sha"], "a" * 40)

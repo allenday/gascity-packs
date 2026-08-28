@@ -1381,6 +1381,20 @@ def list_pull_request_files_with_token(token: str, owner: str, repo: str, number
     return data
 
 
+def pull_request_head_sha_with_token(token: str, owner: str, repo: str, number: str) -> str:
+    """Fetch the current PR head SHA through the authenticated GitHub boundary."""
+    pull_request = github_api_request(
+        "GET",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls/{urllib.parse.quote(str(number))}",
+        bearer_token=token,
+    )
+    head = pull_request.get("head")
+    sha = str(head.get("sha", "")).strip().lower() if isinstance(head, dict) else ""
+    if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        raise GitHubAPIError("pull request response did not contain a valid head SHA")
+    return sha
+
+
 def create_pull_request(
     app_cfg: dict[str, Any],
     installation_id: str,
