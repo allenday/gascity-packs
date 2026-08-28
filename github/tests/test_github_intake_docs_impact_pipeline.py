@@ -13,6 +13,17 @@ import github_intake_docs_impact_pipeline as pipeline
 
 
 class DocsImpactPipelineTests(unittest.TestCase):
+    def test_sidecar_output_requires_the_exact_snapshot_digest_and_protocol_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = pathlib.Path(temp_dir) / "snapshot.json"
+            snapshot.write_text('{"schema_version":1}', encoding="utf-8")
+            artifact = {"from": "sidecar"}
+            current = {"schema_version": 1, "snapshot_sha256": pipeline.snapshot_sha256(snapshot), "artifact": artifact}
+
+            self.assertEqual(pipeline.unwrap_current_artifact(snapshot, current), artifact)
+            self.assertIsNone(pipeline.unwrap_current_artifact(snapshot, {**current, "snapshot_sha256": "0" * 64}))
+            self.assertIsNone(pipeline.unwrap_current_artifact(snapshot, {**current, "schema_version": 2}))
+
     def test_handoff_enqueues_sanitized_snapshot_and_consumes_sidecar_artifact(self) -> None:
         payload = {
             "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},

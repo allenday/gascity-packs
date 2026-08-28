@@ -52,14 +52,32 @@ def job_name(context: dict[str, str]) -> str:
     return common.safe_storage_id(service.github_pr_source_key(context), "docs-patch-handoff")
 
 
+def snapshot_sha256(snapshot_file: pathlib.Path) -> str:
+    import hashlib
+    return hashlib.sha256(snapshot_file.read_bytes()).hexdigest()
+
+
+def unwrap_current_artifact(snapshot_file: pathlib.Path, value: Any) -> dict[str, Any] | None:
+    """Reject output unless its protocol version and digest match this job exactly."""
+    if not isinstance(value, dict):
+        return None
+    if set(value) != {"schema_version", "snapshot_sha256", "artifact"}:
+        return None
+    if value.get("schema_version") != 1 or value.get("snapshot_sha256") != snapshot_sha256(snapshot_file):
+        return None
+    artifact = value.get("artifact")
+    return artifact if isinstance(artifact, dict) else None
+
+
 def wait_for_sidecar_artifact(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> dict[str, Any] | None:
     """Consume only the artifact produced for this revision-bound queue item."""
     timeout = max(0.0, float(os.environ.get("GC_GITHUB_DOCS_PATCH_WAIT_SECONDS", "15")))
     deadline = time.monotonic() + timeout
     while time.monotonic() <= deadline:
         value = common.read_json(artifact_file, None)
-        if isinstance(value, dict):
-            return value
+        artifact = unwrap_current_artifact(snapshot_file, value)
+        if artifact is not None:
+            return artifact
         time.sleep(0.1)
     return None
 
