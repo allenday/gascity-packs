@@ -846,6 +846,28 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(metadata["external.kind"], "pull-request-docs-impact")
         self.assertEqual(metadata["github.head_sha"], "a" * 40)
 
+    def test_queue_agent_review_writes_one_revision_bound_assignment_per_source_key(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
+
+        created = service.queue_agent_review(context, source, ["src/cli.py", "docs/guide.md"])
+        duplicate = service.queue_agent_review(context, source, ["src/cli.py", "docs/guide.md"])
+        next_revision = service.queue_agent_review(
+            {**context, "head_sha": "b" * 40}, {"bead_id": "ga-next", "source_key": "github-pr:17:9:" + "b" * 40}, ["src/cli.py"]
+        )
+
+        self.assertEqual(created["status"], "queued")
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(created["assignment"]["kind"], "github-pr-docs-impact-assignment")
+        self.assertEqual(created["assignment"]["identity"], {
+            "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+            "head_sha": "a" * 40, "source_key": "github-pr:17:9:" + "a" * 40,
+        })
+        self.assertEqual(created["assignment"]["agent_skill"], "developer-experience-techdocs")
+        self.assertEqual(created["assignment"]["changed_paths"], ["docs/guide.md", "src/cli.py"])
+        self.assertEqual(service.common.read_json(created["assignment_path"]), created["assignment"])
+        self.assertNotEqual(created["assignment_path"], next_revision["assignment_path"])
+
     def test_addressed_route_target_derives_from_github_repo_at_dispatch_time(self) -> None:
         with mock.patch.object(
             service.common,

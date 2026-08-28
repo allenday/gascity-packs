@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
 import github_intake_docs_impact as docs_impact
+import github_intake_docs_patch as docs_patch
 import github_intake_service as service
 
 
@@ -45,7 +46,7 @@ def proposal(head_sha: str = "a" * 40, status: str = "proposed") -> dict[str, ob
 class DocsImpactTests(unittest.TestCase):
     def test_derived_result_is_idempotent_and_persists_canonical_artifact(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        artifact = docs_impact.docs_patch.validate_artifact(proposal())
+        artifact = docs_patch.validate_artifact(proposal())
         with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
             service, "addressed_sources_by_key", side_effect=[[], [{"id": "ga-result"}]]
         ), mock.patch.object(service, "run_subprocess", return_value=mock.Mock(returncode=0, stdout='{"id":"ga-result"}', stderr="")):
@@ -59,10 +60,10 @@ class DocsImpactTests(unittest.TestCase):
 
     def test_regenerated_patch_with_a_new_timestamp_reuses_derived_result_identity(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        first = docs_impact.docs_patch.validate_artifact(proposal())
+        first = docs_patch.validate_artifact(proposal())
         regenerated = proposal()
         regenerated["generated_at"] = "2026-08-28T13:00:00Z"
-        second = docs_impact.docs_patch.validate_artifact(regenerated)
+        second = docs_patch.validate_artifact(regenerated)
         self.assertNotEqual(first["artifact_sha256"], second["artifact_sha256"])
         with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
             service, "addressed_sources_by_key", side_effect=[[], [{"id": "ga-result"}]]
@@ -73,92 +74,29 @@ class DocsImpactTests(unittest.TestCase):
         self.assertEqual(created["source_key"], duplicate["source_key"])
         self.assertEqual(created["source_key"], service.github_pr_docs_patch_key(context, first["patch_sha256"]))
 
-    def test_projection_rejects_artifact_for_an_older_source_sha(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "b" * 40}
-        result = docs_impact.project_docs_patch(context, {"bead_id": "ga-source"}, proposal())
-
-        self.assertEqual(result["outcome"], "unavailable")
-        self.assertEqual(result["reason"], "artifact_identity_mismatch")
-        self.assertIsNone(result["result"])
-
-    def test_proposed_projection_has_safe_actionable_check_text(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        artifact = docs_impact.docs_patch.validate_artifact(proposal())
-        output = docs_impact.patch_check_output(context, {"bead_id": "ga-source"}, artifact, "proposed")
-
-        self.assertEqual(output["title"], "Documentation update proposed")
-        self.assertIn("Artifact digest:", output["summary"])
-        self.assertIn("Apply this documentation patch", output["summary"])
-        self.assertIn("```diff", output["text"])
-        self.assertIn("docs/guide.md", output["text"])
-
-    def test_unavailable_artifact_has_action_required_output_without_patch_text(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        result = docs_impact.project_docs_patch(context, {"bead_id": "ga-source"}, None)
-        output = docs_impact.patch_check_output(context, {"bead_id": "ga-source"}, None, result["outcome"])
-
-        self.assertEqual(result["outcome"], "unavailable")
-        self.assertEqual(result["reason"], "artifact_unavailable")
-        self.assertEqual(output["title"], "Documentation review needed")
-        self.assertNotIn("```diff", output.get("text", ""))
-
-    def test_fallback_check_explains_changed_code_and_next_step_without_internal_provenance(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        output = docs_impact.patch_check_output(
-            context, {"bead_id": "ga-source"}, None, "needs-human-decision", "artifact_unavailable",
-            ["github/scripts/github_intake_service.py"],
-        )
-
-        self.assertEqual(output["title"], "Documentation review needed")
-        self.assertIn("`github/scripts/github_intake_service.py`", output["summary"])
-        self.assertIn("Next step:", output["summary"])
-        self.assertNotIn("Source bead", output["summary"])
-        self.assertNotIn("Source key", output["summary"])
-
-    def test_unavailable_and_unsafe_output_include_safe_specific_reasons(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        unavailable = docs_impact.project_docs_patch(context, {"bead_id": "ga-source"}, None)
-        with mock.patch.object(service, "create_pull_request_docs_patch_result", return_value={"status": "created", "bead_id": "ga-result"}):
-            unsafe = docs_impact.project_docs_patch(context, {"bead_id": "ga-source"}, proposal(status="unsafe"))
-
-        unavailable_output = docs_impact.patch_check_output(
-            context, {"bead_id": "ga-source"}, None, unavailable["outcome"], unavailable["reason"]
-        )
-        unsafe_output = docs_impact.patch_check_output(
-            context, {"bead_id": "ga-source"}, unsafe["artifact"], unsafe["outcome"], unsafe["reason"]
-        )
-        self.assertIn("Next step:", unavailable_output["summary"])
-        self.assertIn("The documentation proposal was marked unsafe.", unsafe_output["summary"])
-        self.assertNotIn("```diff", unavailable_output.get("text", ""))
-        self.assertNotIn("```diff", unsafe_output.get("text", ""))
-
     def test_webhook_payload_unwraps_durable_delivery_envelope(self) -> None:
         payload = {"number": 9, "pull_request": {"head": {"sha": "a" * 40}}}
         self.assertEqual(docs_impact.webhook_payload({"event": "pull_request", "payload": payload}), payload)
 
-    def test_classify_paths_is_conservative_for_product_change_without_docs(self) -> None:
-        self.assertEqual(
-            docs_impact.classify_paths(["github/scripts/github_intake_common.py", "github/tests/test_common.py"])[0],
-            "needs-human-decision",
-        )
-
-    def test_classify_paths_passes_non_product_change(self) -> None:
-        self.assertEqual(docs_impact.classify_paths([".github/workflows/test.yml"])[0], "no-impact")
-
-    def test_evaluate_completes_unavailable_check_as_action_required_for_exact_revision(self) -> None:
+    def test_evaluate_queues_city_review_without_creating_a_check(self) -> None:
         payload = {
             "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
             "pull_request": {"number": 9, "html_url": "https://github.com/allenday/demo/pull/9", "head": {"sha": "a" * 40}},
             "installation": {"id": 44},
         }
-        with mock.patch.object(docs_impact, "create_source", return_value={"status": "created", "bead_id": "ga-1"}), mock.patch.object(
-            docs_impact.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check, mock.patch.object(
-            docs_impact.common, "update_check_run_with_token", return_value={"id": 81, "conclusion": "action_required"}
-        ) as update_check:
-            result = docs_impact.evaluate(payload, "delivery-1", "token")
+        github_requests: list[object] = []
+        source_key = "github-pr:17:9:" + "a" * 40
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
+            docs_impact, "create_source", return_value={"status": "created", "bead_id": "ga-1", "source_key": source_key}
+        ), mock.patch.object(
+            service.common, "create_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
+        ), mock.patch.object(
+            service.common, "update_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
+        ):
+            result = docs_impact.evaluate(payload, "delivery-1", "token", paths=["src/cli.py"])
 
-        self.assertEqual(result["outcome"], "needs-human-decision")
-        self.assertEqual(create_check.call_args.args[3], "a" * 40)
-        self.assertEqual(update_check.call_args.args[3], 81)
-        self.assertEqual(update_check.call_args.args[5], "action_required")
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(github_requests, [])
+        self.assertEqual(result["assignment"]["kind"], "github-pr-docs-impact-assignment")
+        self.assertEqual(result["assignment"]["identity"]["source_key"], source_key)
+        self.assertEqual(result["assignment"]["agent_skill"], "developer-experience-techdocs")

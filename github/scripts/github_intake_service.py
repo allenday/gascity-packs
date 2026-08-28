@@ -41,6 +41,8 @@ ADDRESSED_ROUTER_STALE_AFTER = timedelta(minutes=10)
 # define their own configuration knobs without this pack knowing the store.
 PROFILE_IDENTITY_ENV_PREFIX = "GITHUB_INTAKE_"
 INTAKE_APP_CONFIG_REQUIRED_FIELDS = ("app_id", "webhook_secret", "private_key_pem")
+DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION = 1
+DOCS_IMPACT_AGENT_SKILL = "developer-experience-techdocs"
 
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -1008,6 +1010,47 @@ def docs_impact_run_path(context: dict[str, str]) -> str:
     """Return the local record for one immutable PR revision's public run page."""
     storage_id = common.safe_storage_id(github_pr_source_key(context), "docs-impact-run")
     return os.path.join(common.data_dir(), "docs-impact-runs", f"{storage_id}.json")
+
+
+def docs_impact_assignment_path(context: dict[str, str]) -> str:
+    """Return the revision-bound path in the existing sanitized worker inbox."""
+    root = os.environ.get(
+        "GC_GITHUB_DOCS_PATCH_SNAPSHOT_DIR",
+        os.path.join(common.data_dir(), "docs-patch-snapshots"),
+    )
+    storage_id = common.safe_storage_id(github_pr_source_key(context), "docs-impact-assignment")
+    return os.path.join(root, f"{storage_id}.json")
+
+
+def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+    """Write one sanitized TechDocs assignment for an immutable PR revision."""
+    source_key = str(source.get("source_key", "")).strip()
+    expected_source_key = github_pr_source_key(context)
+    if source_key != expected_source_key:
+        return {"status": "failed", "reason": "source_key_mismatch"}
+    try:
+        pr_number = int(context["number"])
+    except (KeyError, TypeError, ValueError):
+        return {"status": "failed", "reason": "pr_number_invalid"}
+    assignment = {
+        "schema_version": DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION,
+        "kind": "github-pr-docs-impact-assignment",
+        "identity": {
+            "repository_id": context["repository_id"],
+            "repository": context["repository"],
+            "pr_number": pr_number,
+            "head_sha": context["head_sha"],
+            "source_key": source_key,
+        },
+        "agent_skill": DOCS_IMPACT_AGENT_SKILL,
+        "changed_paths": sorted({str(path).strip() for path in paths if str(path).strip()})[:100],
+    }
+    assignment_path = docs_impact_assignment_path(context)
+    existing = common.read_json(assignment_path)
+    if isinstance(existing, dict) and existing.get("kind") == assignment["kind"] and existing.get("identity") == assignment["identity"] and existing.get("agent_skill") == DOCS_IMPACT_AGENT_SKILL:
+        return {"status": "duplicate", "assignment": existing, "assignment_path": assignment_path}
+    common.atomic_write_json(assignment_path, assignment)
+    return {"status": "queued", "assignment": assignment, "assignment_path": assignment_path}
 
 
 def save_docs_impact_run(
