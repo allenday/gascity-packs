@@ -123,6 +123,22 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         self.assertNotIn("conclusion", request.call_args.kwargs["payload"])
 
     @mock.patch.object(common, "github_api_request")
+    def test_compare_commits_uses_exact_base_and_head_sha_endpoint(self, request: mock.Mock) -> None:
+        files = [{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}]
+        request.return_value = {"files": files}
+
+        result = common.compare_commits_with_token(
+            "installation-token", "allenday", "repo", "b" * 40, "a" * 40,
+        )
+
+        self.assertEqual(result, files)
+        request.assert_called_once_with(
+            "GET",
+            "/repos/allenday/repo/compare/" + "b" * 40 + "..." + "a" * 40 + "?per_page=100&page=1",
+            bearer_token="installation-token",
+        )
+
+    @mock.patch.object(common, "github_api_request")
     def test_docs_impact_check_links_to_an_opaque_run_locator(self, request: mock.Mock) -> None:
         request.return_value = {"id": 9}
         os.environ["GITHUB_INTAKE_ADMIN_PUBLIC_URL"] = "https://city.example"

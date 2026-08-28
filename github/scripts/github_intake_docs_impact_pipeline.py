@@ -39,8 +39,8 @@ class UnsafeEvidenceError(ValueError):
 
 
 def changed_paths(token: str, context: dict[str, str]) -> list[str]:
-    files = common.list_pull_request_files_with_token(
-        token, context["owner"], context["repo"], context["number"],
+    files = common.compare_commits_with_token(
+        token, context["owner"], context["repo"], context["base_sha"], context["head_sha"],
     )
     paths = [str(file.get("filename", "")).strip() for file in files]
     return sorted({path for path in paths if path})
@@ -48,12 +48,9 @@ def changed_paths(token: str, context: dict[str, str]) -> list[str]:
 
 def evidence_bundle(token: str, context: dict[str, str]) -> dict[str, Any]:
     """Bound the reviewer input to textual PR evidence at the exact head SHA."""
-    before = common.pull_request_head_sha_with_token(
-        token, context["owner"], context["repo"], context["number"],
+    files = common.compare_commits_with_token(
+        token, context["owner"], context["repo"], context["base_sha"], context["head_sha"],
     )
-    if before != context["head_sha"]:
-        raise RevisionChangedError("pull request head differs from webhook revision")
-    files = common.list_pull_request_files_with_token(token, context["owner"], context["repo"], context["number"])
     entries: list[dict[str, str]] = []
     total_evidence_bytes = 0
     for file in files[:100]:
@@ -67,13 +64,16 @@ def evidence_bundle(token: str, context: dict[str, str]) -> dict[str, Any]:
             if total_evidence_bytes > MAX_EVIDENCE_TOTAL_BYTES:
                 raise UnsafeEvidenceError("pull request total evidence exceeds the byte limit")
             entries.append({"path": path, "reference": reference, "patch": patch})
-    after = common.pull_request_head_sha_with_token(
-        token, context["owner"], context["repo"], context["number"],
-    )
-    if after != before or after != context["head_sha"]:
-        raise RevisionChangedError("pull request head changed while evidence was collected")
     entries.sort(key=lambda value: value["path"])
     return {"head_sha": context["head_sha"], "files": entries}
+
+
+def require_current_head(token: str, context: dict[str, str]) -> None:
+    current = common.pull_request_head_sha_with_token(
+        token, context["owner"], context["repo"], context["number"],
+    )
+    if current != context["head_sha"]:
+        raise RevisionChangedError("pull request head differs from webhook revision")
 
 
 def validate_review_candidate(raw_assignment: bytes, value: Any) -> dict[str, Any] | None:
@@ -152,6 +152,10 @@ def run_handoff(
         return {"status": "ignored", "reason": "head_sha_changed", "head_sha": context["head_sha"]}
     except UnsafeEvidenceError:
         return {"status": "ignored", "reason": "evidence_unsafe", "head_sha": context["head_sha"]}
+    try:
+        require_current_head(token, context)
+    except RevisionChangedError:
+        return {"status": "ignored", "reason": "head_sha_changed", "head_sha": context["head_sha"]}
     queued = docs_impact.evaluate(payload, delivery_id, token, paths=[item["path"] for item in bundle["files"]], evidence_bundle=bundle)
     try:
         assignment_file = pathlib.Path(str(queued["assignment_path"]))
@@ -172,6 +176,10 @@ def run_handoff(
     )
     if review is None:
         return queued
+    try:
+        require_current_head(token, context)
+    except RevisionChangedError:
+        return {"status": "ignored", "reason": "head_sha_changed", "head_sha": context["head_sha"]}
     record = docs_impact.project_agent_review(context, source, review)
     if record is None:
         return {"status": "candidate_rejected", "head_sha": context["head_sha"]}

@@ -49,35 +49,97 @@ def envelope(raw: bytes, candidate: dict[str, object]) -> dict[str, object]:
 
 
 class DocsImpactPipelineTests(unittest.TestCase):
-    def test_revision_evidence_requires_same_remote_head_before_and_after_file_fetch(self) -> None:
-        events: list[str] = []
-
-        def remote_head(*_args: object) -> str:
-            events.append("head")
-            return "a" * 40
-
-        def changed_files(*_args: object) -> list[dict[str, str]]:
-            events.append("files")
-            return [{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}]
+    def test_exact_sha_evidence_resists_mutable_pr_files_a_to_b_to_a_race(self) -> None:
+        context = pipeline.service.github_pr_context(payload())
+        exact_patch = "@@ -1 +1 @@\n-old-a\n+new-a"
+        poisoned_patch = "@@ -1 +1 @@\n-old-b\n+new-b"
 
         with mock.patch.object(
-            pipeline.common, "pull_request_head_sha_with_token", side_effect=remote_head
-        ), mock.patch.object(
-            pipeline.common, "list_pull_request_files_with_token", side_effect=changed_files
-        ):
-            bundle = pipeline.evidence_bundle("token", pipeline.service.github_pr_context(payload()))
-
-        self.assertEqual(events, ["head", "files", "head"])
-        self.assertEqual(bundle["head_sha"], "a" * 40)
-
-    def test_head_change_during_evidence_fetch_fails_before_source_or_queue_side_effects(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
             pipeline.common,
             "pull_request_head_sha_with_token",
-            side_effect=["a" * 40, "b" * 40],
+            side_effect=["a" * 40, "a" * 40],
         ), mock.patch.object(
             pipeline.common,
             "list_pull_request_files_with_token",
+            return_value=[{"filename": "docs/guide.md", "patch": poisoned_patch}],
+        ) as mutable_files, mock.patch.object(
+            pipeline.common,
+            "compare_commits_with_token",
+            return_value=[{"filename": "docs/guide.md", "patch": exact_patch}],
+        ) as exact_files:
+            bundle = pipeline.evidence_bundle("token", context)
+
+        self.assertEqual(bundle["files"][0]["patch"], exact_patch)
+        exact_files.assert_called_once_with(
+            "token", "allenday", "demo", "b" * 40, "a" * 40,
+        )
+        mutable_files.assert_not_called()
+
+    def test_head_change_after_queue_before_projection_creates_no_check(self) -> None:
+        current_head = ["a" * 40]
+
+        def remote_head(*_args: object) -> str:
+            return current_head[0]
+
+        def completed_review(
+            _assignment_file: pathlib.Path, _artifact_file: pathlib.Path, _wait_seconds: float,
+        ) -> dict[str, object]:
+            current_head[0] = "b" * 40
+            return review()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            assignments, artifacts = root / "assignments", root / "artifacts"
+            queued = {
+                "status": "queued",
+                "source": {"source_key": assignment()["identity"]["source_key"]},
+                "assignment": assignment(),
+                "assignment_path": str(assignments / "revision.json"),
+                "head_sha": "a" * 40,
+            }
+            with mock.patch.object(
+                pipeline.common, "pull_request_head_sha_with_token", side_effect=remote_head
+            ), mock.patch.object(
+                pipeline.common,
+                "list_pull_request_files_with_token",
+                return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],
+            ), mock.patch.object(
+                pipeline.common,
+                "compare_commits_with_token",
+                return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],
+            ), mock.patch.object(
+                pipeline.docs_impact, "evaluate", return_value=queued
+            ) as evaluate, mock.patch.object(
+                pipeline.docs_impact, "project_agent_review"
+            ) as project, mock.patch.object(
+                pipeline.docs_impact, "publish_agent_review"
+            ) as publish:
+                result = pipeline.run_handoff(
+                    payload(),
+                    "delivery-1",
+                    "token",
+                    assignments,
+                    artifacts,
+                    completed_review,
+                    wait_seconds=0,
+                )
+
+        self.assertEqual(
+            result,
+            {"status": "ignored", "reason": "head_sha_changed", "head_sha": "a" * 40},
+        )
+        evaluate.assert_called_once()
+        project.assert_not_called()
+        publish.assert_not_called()
+
+    def test_head_change_before_queue_fails_before_source_or_queue_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            pipeline.common,
+            "pull_request_head_sha_with_token",
+            return_value="b" * 40,
+        ), mock.patch.object(
+            pipeline.common,
+            "compare_commits_with_token",
             return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],
         ), mock.patch.object(pipeline.docs_impact, "evaluate") as evaluate:
             root = pathlib.Path(temp_dir)
@@ -103,9 +165,9 @@ class DocsImpactPipelineTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
                 pipeline.common,
                 "pull_request_head_sha_with_token",
-                side_effect=["a" * 40, "a" * 40],
+                return_value="a" * 40,
             ), mock.patch.object(
-                pipeline.common, "list_pull_request_files_with_token", return_value=files
+                pipeline.common, "compare_commits_with_token", return_value=files
             ), mock.patch.object(pipeline.docs_impact, "evaluate") as evaluate:
                 root = pathlib.Path(temp_dir)
                 result = pipeline.run_handoff(
@@ -162,7 +224,7 @@ class DocsImpactPipelineTests(unittest.TestCase):
                 with mock.patch.object(
                     pipeline.common, "pull_request_head_sha_with_token", return_value="a" * 40
                 ), mock.patch.object(
-                    pipeline.common, "list_pull_request_files_with_token", return_value=[]
+                    pipeline.common, "compare_commits_with_token", return_value=[]
                 ), mock.patch.object(
                     pipeline.docs_impact, "evaluate", return_value=queued
                 ), mock.patch.object(
@@ -198,7 +260,7 @@ class DocsImpactPipelineTests(unittest.TestCase):
                 pipeline.common, "pull_request_head_sha_with_token", return_value="a" * 40
             ), mock.patch.object(
                 pipeline.common,
-                "list_pull_request_files_with_token",
+                "compare_commits_with_token",
                 return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],
             ), mock.patch.object(
                 pipeline.docs_impact, "create_source", return_value=source

@@ -1823,6 +1823,7 @@ def github_pr_context(payload: dict[str, Any]) -> dict[str, str]:
         # level; retain the nested fallback for compact test/replay payloads.
         "number": str(payload.get("number", pull_request.get("number", ""))).strip(),
         "head_sha": str(head.get("sha", "")).strip(),
+        "base_sha": str(base.get("sha", "")).strip(),
         "head_ref": str(head.get("ref", "")).strip(),
         "base_ref": str(base.get("ref", "")).strip(),
         "url": str(pull_request.get("html_url", "")).strip(),

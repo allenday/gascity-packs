@@ -1381,6 +1381,26 @@ def list_pull_request_files_with_token(token: str, owner: str, repo: str, number
     return data
 
 
+def compare_commits_with_token(
+    token: str, owner: str, repo: str, base_sha: str, head_sha: str,
+) -> list[dict[str, Any]]:
+    """Return textual file evidence from one immutable commit comparison."""
+    base_sha = str(base_sha).strip().lower()
+    head_sha = str(head_sha).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+        raise GitHubAPIError("commit comparison requires exact base and head SHAs")
+    basehead = urllib.parse.quote(f"{base_sha}...{head_sha}", safe=".")
+    comparison = github_api_request(
+        "GET",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/compare/{basehead}?per_page=100&page=1",
+        bearer_token=token,
+    )
+    files = comparison.get("files")
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise GitHubAPIError("commit comparison did not contain a valid files list")
+    return files
+
+
 def pull_request_head_sha_with_token(token: str, owner: str, repo: str, number: str) -> str:
     """Fetch the current PR head SHA through the authenticated GitHub boundary."""
     pull_request = github_api_request(
