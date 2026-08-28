@@ -25,6 +25,26 @@ The current slice ships:
 - `/gc fix` routing into the workflows-pack `mol-bug-report-flow-v2` pipeline
 - issue-only `/gc fix` routing for this phase; other `/gc` commands are intentionally ignored
 
+## Pull-request documentation impact (patch-first)
+
+For configured `pull_request` events, the docs-impact rule records immutable
+source evidence for the exact PR head SHA and publishes the `Gas City /
+docs-impact` Check Run for that revision. It is patch-first: a TechDocs worker
+may propose a bounded, evidence-backed documentation diff, but neither the
+worker nor the check writes to the PR branch or opens a PR.
+
+The trusted intake supervisor validates and persists a proposal as a separate
+immutable result bead keyed by repository ID, PR number, head SHA, and patch
+digest. It is never substituted for its source bead. The public check names
+the source bead, source key, code SHA, and artifact digest; every resulting
+state remains `ACTION_REQUIRED`, including unavailable or unsafe proposals.
+
+The untrusted worker receives only a sanitized, revision-bound snapshot and
+has no GitHub credentials, git credentials, City/config mount, writable
+supervisor state, or network access. It can emit only a canonical artifact to
+its isolated outbox. A new PR head SHA creates a new source identity and is
+evaluated independently; it never inherits an earlier patch result.
+
 The `/gc fix` path posts a queued-in-bugflow acknowledgement after the bugflow
 source bead and router scan succeed. Bugflow snapshots the issue and comments,
 then owns investigation, classification, implementation gates, PR review, CI,
