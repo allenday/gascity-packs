@@ -15,20 +15,13 @@ import argparse
 import json
 import os
 import pathlib
-import subprocess
 import sys
+import time
 from typing import Any, Callable
 
 import github_intake_common as common
 import github_intake_docs_impact as docs_impact
 import github_intake_service as service
-
-
-def tokenless_worker_env(parent: dict[str, str] | None = None) -> dict[str, str]:
-    """Return the minimal child environment, explicitly excluding credentials."""
-    parent = parent or os.environ
-    allowed = ("PATH", "PYTHONPATH", "LANG", "LC_ALL", "TZ")
-    return {name: parent[name] for name in allowed if parent.get(name)}
 
 
 def changed_paths(token: str, context: dict[str, str]) -> list[str]:
@@ -54,40 +47,45 @@ def read_proposal(path: pathlib.Path | None) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def worker_command(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> None:
-    worker = pathlib.Path(__file__).with_name("github_intake_docs_patch_worker.py")
-    result = subprocess.run(
-        [sys.executable, str(worker), "--snapshot-file", str(snapshot_file), "--artifact-file", str(artifact_file)],
-        text=True, capture_output=True, env=tokenless_worker_env(), check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"tokenless TechDocs worker failed: {result.stderr.strip() or result.stdout.strip()}")
+def job_name(context: dict[str, str]) -> str:
+    """Stable queue identity for one immutable pull-request head."""
+    return common.safe_storage_id(service.github_pr_source_key(context), "docs-patch-handoff")
+
+
+def wait_for_sidecar_artifact(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> dict[str, Any] | None:
+    """Consume only the artifact produced for this revision-bound queue item."""
+    timeout = max(0.0, float(os.environ.get("GC_GITHUB_DOCS_PATCH_WAIT_SECONDS", "15")))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() <= deadline:
+        value = common.read_json(artifact_file, None)
+        if isinstance(value, dict):
+            return value
+        time.sleep(0.1)
+    return None
 
 
 def run_handoff(
     payload: dict[str, Any], delivery_id: str, token: str, proposal_file: pathlib.Path | None,
-    work_root: pathlib.Path, run_worker: Callable[[pathlib.Path, pathlib.Path], None] = worker_command,
+    snapshot_dir: pathlib.Path, artifact_dir: pathlib.Path,
+    wait_for_artifact: Callable[[pathlib.Path, pathlib.Path], dict[str, Any] | None] = wait_for_sidecar_artifact,
 ) -> dict[str, Any]:
-    """Create the safe worker handoff and project its artifact for this exact SHA."""
+    """Enqueue a safe worker handoff and project its sidecar artifact for this SHA."""
     context = service.github_pr_context(payload)
     paths = changed_paths(token, context)
     proposal = read_proposal(proposal_file)
     artifact: dict[str, Any] | None = None
     if proposal is not None:
-        work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        snapshot_file = work_root / "snapshot.json"
-        artifact_file = work_root / "artifact.json"
+        snapshot_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        name = job_name(context)
+        snapshot_file = snapshot_dir / f"{name}.json"
+        artifact_file = artifact_dir / f"{name}.json"
         common.atomic_write_json(snapshot_file, {
             "schema_version": 1, "proposal": proposal,
             "identity": {key: context[key] for key in ("repository_id", "repository", "number", "head_sha", "base_ref")},
             "changed_paths": paths,
         })
-        try:
-            run_worker(snapshot_file, artifact_file)
-            produced = common.read_json(artifact_file, None)
-            artifact = produced if isinstance(produced, dict) else None
-        except (OSError, RuntimeError):
-            artifact = None
+        artifact = wait_for_artifact(snapshot_file, artifact_file)
     return docs_impact.evaluate(payload, delivery_id, token, artifact, paths=paths)
 
 
@@ -106,8 +104,12 @@ def main() -> int:
         payload = docs_impact.webhook_payload(json.load(handle))
     context = service.github_pr_context(payload)
     proposal_file = proposal_inbox_path(context)
-    work_root = pathlib.Path(common.data_dir()) / "docs-patch-handoffs" / common.safe_storage_id(service.github_pr_source_key(context), "handoff")
-    print(json.dumps(run_handoff(payload, args.delivery_id, token, proposal_file, work_root), sort_keys=True))
+    root = pathlib.Path(common.data_dir())
+    print(json.dumps(run_handoff(
+        payload, args.delivery_id, token, proposal_file,
+        pathlib.Path(os.environ.get("GC_GITHUB_DOCS_PATCH_SNAPSHOT_DIR", root / "docs-patch-snapshots")),
+        pathlib.Path(os.environ.get("GC_GITHUB_DOCS_PATCH_ARTIFACT_DIR", root / "docs-patch-artifacts")),
+    ), sort_keys=True))
     return 0
 
 

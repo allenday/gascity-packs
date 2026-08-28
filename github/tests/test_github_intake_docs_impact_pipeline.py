@@ -13,7 +13,7 @@ import github_intake_docs_impact_pipeline as pipeline
 
 
 class DocsImpactPipelineTests(unittest.TestCase):
-    def test_handoff_writes_only_sanitized_snapshot_runs_tokenless_worker_and_evaluates_artifact(self) -> None:
+    def test_handoff_enqueues_sanitized_snapshot_and_consumes_sidecar_artifact(self) -> None:
         payload = {
             "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
             "number": 9,
@@ -26,21 +26,23 @@ class DocsImpactPipelineTests(unittest.TestCase):
             proposal_file.write_text(json.dumps(proposal), encoding="utf-8")
             captured: dict[str, object] = {}
 
-            def run_worker(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> None:
+            def wait_for_artifact(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> dict[str, object] | None:
                 captured["snapshot"] = json.loads(snapshot_file.read_text(encoding="utf-8"))
-                captured["token_present"] = "GH_TOKEN" in pipeline.tokenless_worker_env({"GH_TOKEN": "secret"})
                 artifact_file.write_text(json.dumps({"artifact": "from-worker"}), encoding="utf-8")
+                return json.loads(artifact_file.read_text(encoding="utf-8"))
 
             with mock.patch.object(pipeline.common, "list_pull_request_files_with_token", return_value=[{"filename": "src/widget.py"}]), mock.patch.object(
                 pipeline.docs_impact, "evaluate", return_value={"outcome": "proposed"}
             ) as evaluate:
-                result = pipeline.run_handoff(payload, "delivery-1", "secret", proposal_file, root / "work", run_worker)
+                result = pipeline.run_handoff(
+                    payload, "delivery-1", "secret", proposal_file, root / "snapshots", root / "artifacts", wait_for_artifact,
+                )
 
         self.assertEqual(result["outcome"], "proposed")
         self.assertEqual(captured["snapshot"]["changed_paths"], ["src/widget.py"])
         self.assertEqual(captured["snapshot"]["proposal"], proposal["proposal"])
-        self.assertFalse(captured["token_present"])
         self.assertEqual(evaluate.call_args.args[3], {"artifact": "from-worker"})
+        self.assertNotIn("secret", json.dumps(captured["snapshot"]))
 
     def test_handoff_without_proposal_evaluates_human_friendly_fallback(self) -> None:
         payload = {
@@ -51,9 +53,10 @@ class DocsImpactPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
             pipeline.common, "list_pull_request_files_with_token", return_value=[{"filename": "github/scripts/intake.py"}]
         ), mock.patch.object(pipeline.docs_impact, "evaluate", return_value={"outcome": "needs-human-decision"}) as evaluate:
-            result = pipeline.run_handoff(payload, "delivery-1", "secret", None, pathlib.Path(temp_dir), mock.Mock())
+            result = pipeline.run_handoff(
+                payload, "delivery-1", "secret", None, pathlib.Path(temp_dir) / "snapshots", pathlib.Path(temp_dir) / "artifacts", mock.Mock(),
+            )
 
         self.assertEqual(result["outcome"], "needs-human-decision")
         self.assertEqual(evaluate.call_args.args[3], None)
         self.assertEqual(evaluate.call_args.kwargs["paths"], ["github/scripts/intake.py"])
-
