@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import multiprocessing
 import urllib.parse
 import pathlib
 import tempfile
@@ -23,6 +24,30 @@ import github_intake_service as service
 # inside a city, and pass in CI only because CI has not installed gc yet at the
 # step that runs them. Each setUp pins the fallback rather than depending on the
 # variable's absence.
+
+
+def queue_agent_review_in_process(
+    state_root: str, start: multiprocessing.synchronize.Barrier,
+    simultaneous_reads: multiprocessing.synchronize.Barrier, results: multiprocessing.queues.Queue,
+) -> None:
+    os.environ["GC_SERVICE_STATE_ROOT"] = state_root
+    read_json = service.common.read_json
+
+    def synchronized_read(*args: object, **kwargs: object) -> object:
+        try:
+            simultaneous_reads.wait(timeout=2)
+        except threading.BrokenBarrierError:
+            pass
+        return read_json(*args, **kwargs)
+
+    service.common.read_json = synchronized_read
+    start.wait(timeout=2)
+    result = service.queue_agent_review(
+        {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40},
+        {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40},
+        ["src/cli.py"],
+    )
+    results.put(result["status"])
 
 
 class DummyWebhookHandler:
@@ -932,6 +957,28 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(len(results), worker_count)
         self.assertEqual(sum(result["status"] == "queued" for result in results), 1)
         self.assertEqual(sum(result["status"] == "duplicate" for result in results), worker_count - 1)
+
+    def test_queue_agent_review_serializes_duplicate_deliveries_across_processes(self) -> None:
+        process_context = multiprocessing.get_context("fork")
+        start = process_context.Barrier(2)
+        simultaneous_reads = process_context.Barrier(2)
+        results = process_context.Queue()
+        processes = [
+            process_context.Process(
+                target=queue_agent_review_in_process,
+                args=(self.tempdir.name, start, simultaneous_reads, results),
+            )
+            for _ in range(2)
+        ]
+
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=5)
+
+        self.assertEqual([process.exitcode for process in processes], [0, 0])
+        statuses = sorted(results.get(timeout=1) for _ in processes)
+        self.assertEqual(statuses, ["duplicate", "queued"])
 
     def test_addressed_route_target_derives_from_github_repo_at_dispatch_time(self) -> None:
         with mock.patch.object(

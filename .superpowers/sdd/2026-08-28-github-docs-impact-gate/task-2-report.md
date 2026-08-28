@@ -12,6 +12,7 @@ Implemented in commit `feat(github): queue docs impact for city review`.
 - Added tests for the absent-before-result GitHub boundary and durable assignment identity/reuse behavior.
 - Round 1: persisted assignments must have the complete canonical schema before being reused; incomplete or type-invalid descriptors are atomically repaired.
 - Round 1: per-source locks serialize concurrent duplicate deliveries so exactly one writer queues the assignment and all others reuse it.
+- Round 2: replaced the interpreter-local lock map with a filesystem-visible, bounded `flock` claim per assignment path, so separate command-action processes coordinate on the same descriptor.
 
 ## Verification
 
@@ -24,7 +25,11 @@ Implemented in commit `feat(github): queue docs impact for city review`.
 - `python3 -m unittest github.tests.test_github_intake_docs_impact github.tests.test_github_intake_service -v` — PASS (65 tests) after round 1.
 - `python3 -m unittest discover -s github/tests -p 'test_*.py' -v` — PASS (152 tests) after round 1.
 - `git diff --check` — PASS after round 1.
+- Round 2 RED: two separate processes both returned `queued` before filesystem locking.
+- `python3 -m unittest github.tests.test_github_intake_docs_impact github.tests.test_github_intake_service -v` — PASS (66 tests) after round 2.
+- `python3 -m unittest discover -s github/tests -p 'test_*.py' -v` — PASS (153 tests) after round 2.
+- `git diff --check` — PASS after round 2.
 
 ## Concerns
 
-The per-source queue lock is process-local, matching this threaded intake service. The legacy patch sidecar remains present for the following task to replace, but this evaluator ignores its candidate artifacts and cannot create or update a GitHub check before a City agent review exists.
+The persistent 0600 lock files are safe rendezvous points rather than stale claims: the kernel releases `flock` automatically on process exit. The legacy patch sidecar remains present for the following task to replace, but this evaluator ignores its candidate artifacts and cannot create or update a GitHub check before a City agent review exists.

@@ -13,6 +13,9 @@ import threading
 import tomllib
 import traceback
 import urllib.parse
+import fcntl
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,8 +46,8 @@ PROFILE_IDENTITY_ENV_PREFIX = "GITHUB_INTAKE_"
 INTAKE_APP_CONFIG_REQUIRED_FIELDS = ("app_id", "webhook_secret", "private_key_pem")
 DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION = 1
 DOCS_IMPACT_AGENT_SKILL = "developer-experience-techdocs"
-DOCS_IMPACT_ASSIGNMENT_LOCKS_GUARD = threading.Lock()
-DOCS_IMPACT_ASSIGNMENT_LOCKS: dict[str, threading.Lock] = {}
+DOCS_IMPACT_ASSIGNMENT_LOCK_TIMEOUT_SECONDS = 5.0
+DOCS_IMPACT_ASSIGNMENT_LOCK_RETRY_SECONDS = 0.01
 
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -1024,10 +1027,30 @@ def docs_impact_assignment_path(context: dict[str, str]) -> str:
     return os.path.join(root, f"{storage_id}.json")
 
 
-def docs_impact_assignment_lock(source_key: str) -> threading.Lock:
-    """Return the process-wide lock for one immutable PR source identity."""
-    with DOCS_IMPACT_ASSIGNMENT_LOCKS_GUARD:
-        return DOCS_IMPACT_ASSIGNMENT_LOCKS.setdefault(source_key, threading.Lock())
+@contextmanager
+def docs_impact_assignment_lock(assignment_path: str) -> Any:
+    """Serialize assignment reconciliation across processes for one source key.
+
+    The lock file remains as a harmless 0600 rendezvous point; `flock` releases
+    its exclusive claim automatically when this process exits or closes it.
+    """
+    lock_path = f"{assignment_path}.lock"
+    os.makedirs(os.path.dirname(lock_path), mode=0o700, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + DOCS_IMPACT_ASSIGNMENT_LOCK_TIMEOUT_SECONDS
+    try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("docs impact assignment lock timed out")
+                time.sleep(DOCS_IMPACT_ASSIGNMENT_LOCK_RETRY_SECONDS)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def is_complete_docs_impact_assignment(value: Any, identity: dict[str, Any]) -> bool:
@@ -1080,7 +1103,7 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
         "changed_paths": sorted({str(path).strip() for path in paths if str(path).strip()})[:100],
     }
     assignment_path = docs_impact_assignment_path(context)
-    with docs_impact_assignment_lock(source_key):
+    with docs_impact_assignment_lock(assignment_path):
         existing = common.read_json(assignment_path)
         if is_complete_docs_impact_assignment(existing, assignment["identity"]):
             return {"status": "duplicate", "assignment": existing, "assignment_path": assignment_path}
