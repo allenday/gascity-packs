@@ -16,6 +16,7 @@ MAX_DIFF_BYTES = 64 * 1024
 MAX_FILES = 32
 MAX_CLAIMS = 64
 MAX_CHECKS = 16
+MAX_EVIDENCE = 64
 
 DOCUMENTATION_PREFIXES = ("docs/", "doc/", "documentation/")
 DOCUMENTATION_FILENAMES = {"readme.md", "changelog.md", "contributing.md"}
@@ -40,6 +41,14 @@ FILE_FIELDS = {"path", "sha256"}
 CLAIM_FIELDS = {"claim", "evidence", "release_scope"}
 CHECK_FIELDS = {"command", "status", "explanation"}
 ROOT_FIELDS_WITH_DIGEST = ROOT_FIELDS | {"artifact_sha256"}
+
+REVIEW_FIELDS = {
+    "schema_version", "kind", "identity", "agent_skill", "verdict", "rationale", "evidence", "confidence", "proposal",
+}
+REVIEW_FIELDS_WITH_DIGEST = REVIEW_FIELDS | {"review_sha256"}
+REVIEW_IDENTITY_FIELDS = {"repository_id", "repository", "pr_number", "head_sha", "source_key"}
+REVIEW_EVIDENCE_FIELDS = {"path", "evidence"}
+REVIEW_VERDICTS = {"no-impact", "docs-sufficient", "docs-change-required", "proposal-ready", "inconclusive"}
 
 
 def canonical_json(value: dict[str, Any]) -> str:
@@ -248,3 +257,96 @@ def validate_artifact(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("artifact_sha256 does not match canonical artifact")
     artifact["artifact_sha256"] = artifact_sha256
     return artifact
+
+
+def _validate_review_identity(value: Any) -> dict[str, Any]:
+    identity = _expect_object(value, "identity")
+    _expect_fields(identity, REVIEW_IDENTITY_FIELDS, "identity")
+    normalized = {
+        "repository_id": _text(identity["repository_id"], "identity.repository_id", 256),
+        "repository": _text(identity["repository"], "identity.repository", 256),
+        "pr_number": identity["pr_number"],
+        "head_sha": _text(identity["head_sha"], "identity.head_sha", 40).lower(),
+        "source_key": _text(identity["source_key"], "identity.source_key", 256),
+    }
+    if isinstance(normalized["pr_number"], bool) or not isinstance(normalized["pr_number"], int) or normalized["pr_number"] <= 0:
+        raise ValueError("identity.pr_number must be a positive integer")
+    if GIT_SHA_PATTERN.fullmatch(normalized["head_sha"]) is None:
+        raise ValueError("identity.head_sha must be a 40-character lowercase Git SHA")
+    expected_source = f"github-pr:{normalized['repository_id']}:{normalized['pr_number']}:{normalized['head_sha']}"
+    if normalized["source_key"] != expected_source:
+        raise ValueError("identity.source_key does not match review identity")
+    return normalized
+
+
+def _validate_review_evidence(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value or len(value) > MAX_EVIDENCE:
+        raise ValueError("evidence must be a non-empty bounded list")
+    result: list[dict[str, str]] = []
+    for index, item in enumerate(value):
+        item = _expect_object(item, f"evidence[{index}]")
+        _expect_fields(item, REVIEW_EVIDENCE_FIELDS, f"evidence[{index}]")
+        path = _text(item["path"], f"evidence[{index}].path", 1024)
+        if "\\" in path or path.startswith("/") or any(part in {"", ".", ".."} for part in pathlib.PurePosixPath(path).parts):
+            raise ValueError(f"evidence[{index}].path is unsafe")
+        evidence = _redact(_text(item["evidence"], f"evidence[{index}].evidence", 2048))
+        if not (evidence.startswith("github://") or evidence.startswith("https://") or evidence.startswith("git:")):
+            raise ValueError(f"evidence[{index}].evidence must be an immutable evidence reference")
+        if evidence.startswith("git:"):
+            pinned = re.search(r"\b[0-9a-f]{40}\b", evidence)
+        else:
+            pinned = re.search(r"/(?:blob|commit)/[0-9a-f]{40}(?:/|$)", evidence)
+        if pinned is None:
+            raise ValueError(f"evidence[{index}].evidence must pin a commit SHA")
+        result.append({"path": path, "evidence": evidence})
+    return sorted(result, key=lambda item: (item["path"], item["evidence"]))
+
+
+def validate_agent_review(document: dict[str, Any]) -> dict[str, Any]:
+    """Return a canonical, revision-bound City TechDocs review or reject it."""
+    document = _expect_object(document, "review")
+    if set(document) != REVIEW_FIELDS and set(document) != REVIEW_FIELDS_WITH_DIGEST:
+        _expect_fields(document, REVIEW_FIELDS, "review")
+    if document["schema_version"] != SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
+    if document["kind"] != "github-pr-docs-impact-review":
+        raise ValueError("kind must be github-pr-docs-impact-review")
+    verdict = _text(document["verdict"], "verdict", 64)
+    if verdict not in REVIEW_VERDICTS:
+        raise ValueError("unknown verdict")
+    rationale = _redact(_text(document["rationale"], "rationale", 4096))
+    skill = _text(document["agent_skill"], "agent_skill", 256)
+    if skill != "developer-experience-techdocs":
+        raise ValueError("agent_skill must be developer-experience-techdocs")
+    confidence = document["confidence"]
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        raise ValueError("confidence must be a number between 0 and 1")
+    proposal = document["proposal"]
+    if verdict != "proposal-ready" and proposal is not None:
+        raise ValueError("proposal is only allowed for proposal-ready verdict")
+    normalized_proposal = validate_artifact(proposal) if proposal is not None else None
+    if normalized_proposal is not None:
+        proposal_identity = normalized_proposal["identity"]
+        review_identity = document["identity"]
+        if normalized_proposal["status"] != "proposed":
+            raise ValueError("proposal must have proposed status")
+        for field in ("repository_id", "repository", "pr_number", "head_sha"):
+            if proposal_identity[field] != review_identity[field]:
+                raise ValueError("proposal identity does not match review identity")
+    review = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": document["kind"],
+        "identity": _validate_review_identity(document["identity"]),
+        "agent_skill": skill,
+        "verdict": verdict,
+        "rationale": rationale,
+        "evidence": _validate_review_evidence(document["evidence"]),
+        "confidence": confidence,
+        "proposal": normalized_proposal,
+    }
+    digest = hashlib.sha256(canonical_json(review).encode("utf-8")).hexdigest()
+    supplied = document.get("review_sha256")
+    if supplied is not None and (_text(supplied, "review_sha256", 64).lower() != digest):
+        raise ValueError("review_sha256 does not match canonical review")
+    review["review_sha256"] = digest
+    return review

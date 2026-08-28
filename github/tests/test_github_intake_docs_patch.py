@@ -64,7 +64,76 @@ def proposal() -> dict[str, object]:
     }
 
 
+def valid_agent_review() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "kind": "github-pr-docs-impact-review",
+        "identity": {
+            "repository_id": "17",
+            "repository": "allenday/demo",
+            "pr_number": 9,
+            "head_sha": "a" * 40,
+            "source_key": "github-pr:17:9:" + "a" * 40,
+        },
+        "agent_skill": "developer-experience-techdocs",
+        "verdict": "docs-sufficient",
+        "rationale": "The changed behavior is adequately documented.",
+        "evidence": [
+            {"path": "docs/guide.md", "evidence": "github://allenday/demo/blob/" + "a" * 40 + "/docs/guide.md"}
+        ],
+        "confidence": 0.92,
+        "proposal": None,
+    }
+
+
 class DocsPatchTests(unittest.TestCase):
+    def test_validate_agent_review_returns_revision_bound_normalized_digest(self) -> None:
+        review = docs_patch.validate_agent_review(valid_agent_review())
+        self.assertEqual(review["kind"], "github-pr-docs-impact-review")
+        self.assertEqual(review["identity"]["source_key"], "github-pr:17:9:" + "a" * 40)
+        self.assertRegex(review["review_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_validate_agent_review_rejects_unbound_result(self) -> None:
+        review = valid_agent_review()
+        review["identity"].pop("source_key")
+        with self.assertRaises(ValueError):
+            docs_patch.validate_agent_review(review)
+
+    def test_validate_agent_review_rejects_boolean_pr_number(self) -> None:
+        review = valid_agent_review()
+        review["identity"]["pr_number"] = True
+        review["identity"]["source_key"] = "github-pr:17:True:" + "a" * 40
+        with self.assertRaises(ValueError):
+            docs_patch.validate_agent_review(review)
+
+    def test_validate_agent_review_rejects_unknown_verdict(self) -> None:
+        review = valid_agent_review()
+        review["verdict"] = "maybe"
+        with self.assertRaisesRegex(ValueError, "verdict"):
+            docs_patch.validate_agent_review(review)
+
+    def test_validate_agent_review_rejects_empty_rationale(self) -> None:
+        review = valid_agent_review()
+        review["rationale"] = "  "
+        with self.assertRaisesRegex(ValueError, "rationale"):
+            docs_patch.validate_agent_review(review)
+
+    def test_validate_agent_review_rejects_malformed_evidence(self) -> None:
+        review = valid_agent_review()
+        review["evidence"] = [{"path": "docs/guide.md", "evidence": "latest"}]
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            docs_patch.validate_agent_review(review)
+
+    def test_validate_agent_review_allows_proposal_only_for_proposal_ready(self) -> None:
+        review = valid_agent_review()
+        review["proposal"] = proposal()
+        with self.assertRaisesRegex(ValueError, "proposal"):
+            docs_patch.validate_agent_review(review)
+
+        review["verdict"] = "proposal-ready"
+        validated = docs_patch.validate_agent_review(review)
+        self.assertIsNotNone(validated["proposal"])
+
     def test_validate_has_deterministic_canonical_digest(self) -> None:
         artifact = proposal()
         reversed_artifact = copy.deepcopy(artifact)
