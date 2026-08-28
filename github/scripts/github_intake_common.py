@@ -25,6 +25,7 @@ GITHUB_API_BASE = os.environ.get("GC_GITHUB_API_BASE", "https://api.github.com")
 GITHUB_API_VERSION = os.environ.get("GC_GITHUB_API_VERSION", "2026-03-10")
 GITHUB_APP_IDENTITY_SCHEMA_VERSION = "github-intake.github-app-identity.v1"
 GITHUB_APP_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+MAX_CHECK_RUN_RECONCILIATION_COUNT = 10_000
 
 
 class GitHubAPIError(RuntimeError):
@@ -1291,15 +1292,37 @@ def find_check_run_by_external_id_with_token(
     token: str, owner: str, repo: str, head_sha: str, external_id: str,
 ) -> dict[str, Any] | None:
     """Find one Check Run by its immutable SHA and opaque external ID."""
-    response = github_api_request(
-        "GET",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(head_sha)}/check-runs?per_page=100",
-        bearer_token=token,
-    )
-    check_runs = response.get("check_runs", []) if isinstance(response, dict) else []
-    for check_run in check_runs:
-        if isinstance(check_run, dict) and check_run.get("external_id") == external_id:
-            return check_run
+    total_count: int | None = None
+    page = 1
+    while total_count is None or (page - 1) * 100 < total_count:
+        response = github_api_request(
+            "GET",
+            f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(head_sha)}"
+            f"/check-runs?per_page=100&page={page}",
+            bearer_token=token,
+        )
+        if not isinstance(response, dict):
+            raise GitHubAPIError("check run reconciliation returned a non-object page")
+        page_total = response.get("total_count")
+        check_runs = response.get("check_runs")
+        if (
+            type(page_total) is not int
+            or not 0 <= page_total <= MAX_CHECK_RUN_RECONCILIATION_COUNT
+            or not isinstance(check_runs, list)
+            or any(not isinstance(check_run, dict) for check_run in check_runs)
+        ):
+            raise GitHubAPIError("check run reconciliation returned an invalid page")
+        if total_count is None:
+            total_count = page_total
+        elif page_total != total_count:
+            raise GitHubAPIError("check run reconciliation changed total_count between pages")
+        expected_count = min(100, total_count - (page - 1) * 100)
+        if len(check_runs) != expected_count:
+            raise GitHubAPIError("check run reconciliation returned an incomplete page")
+        for check_run in check_runs:
+            if check_run.get("external_id") == external_id:
+                return check_run
+        page += 1
     return None
 
 

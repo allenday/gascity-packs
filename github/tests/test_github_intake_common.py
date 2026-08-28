@@ -139,6 +139,40 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         )
 
     @mock.patch.object(common, "github_api_request")
+    def test_check_reconciliation_rejects_missing_or_malformed_pages(self, request: mock.Mock) -> None:
+        for response in ({}, {"total_count": "1", "check_runs": []}, {"total_count": 1, "check_runs": {}}):
+            with self.subTest(response=response):
+                request.return_value = response
+                with self.assertRaises(common.GitHubAPIError):
+                    common.find_check_run_by_external_id_with_token("token", "allenday", "repo", "a" * 40, "run-1")
+
+    @mock.patch.object(common, "github_api_request")
+    def test_check_reconciliation_finds_a_later_page_match(self, request: mock.Mock) -> None:
+        external_id = "docs-impact:run-1"
+        request.side_effect = [
+            {"total_count": 101, "check_runs": [{"id": index, "external_id": "other"} for index in range(100)]},
+            {"total_count": 101, "check_runs": [{"id": 101, "external_id": external_id}]},
+        ]
+
+        found = common.find_check_run_by_external_id_with_token("token", "allenday", "repo", "a" * 40, external_id)
+
+        self.assertEqual(found, {"id": 101, "external_id": external_id})
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("page=2", request.call_args.args[1])
+
+    @mock.patch.object(common, "github_api_request")
+    def test_check_reconciliation_confirms_absence_after_all_pages(self, request: mock.Mock) -> None:
+        request.side_effect = [
+            {"total_count": 101, "check_runs": [{"id": index, "external_id": "other"} for index in range(100)]},
+            {"total_count": 101, "check_runs": [{"id": 101, "external_id": "other"}]},
+        ]
+
+        found = common.find_check_run_by_external_id_with_token("token", "allenday", "repo", "a" * 40, "run-1")
+
+        self.assertIsNone(found)
+        self.assertEqual(request.call_count, 2)
+
+    @mock.patch.object(common, "github_api_request")
     def test_update_check_run_completes_the_created_check(self, request: mock.Mock) -> None:
         request.return_value = {"id": 9, "conclusion": "action_required"}
 
