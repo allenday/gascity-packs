@@ -117,6 +117,24 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         self.assertEqual(request.call_args.kwargs["payload"]["status"], "in_progress")
         self.assertNotIn("conclusion", request.call_args.kwargs["payload"])
 
+    @mock.patch.object(common, "github_api_request")
+    def test_update_check_run_completes_the_created_check(self, request: mock.Mock) -> None:
+        request.return_value = {"id": 9, "conclusion": "action_required"}
+
+        common.update_check_run_with_token(
+            "installation-token",
+            "allenday",
+            "repo",
+            9,
+            "completed",
+            "action_required",
+            {"title": "needs-human-decision", "summary": "review needed"},
+        )
+
+        self.assertEqual(request.call_args.args[:2], ("PATCH", "/repos/allenday/repo/check-runs/9"))
+        self.assertEqual(request.call_args.kwargs["payload"]["status"], "completed")
+        self.assertEqual(request.call_args.kwargs["payload"]["conclusion"], "action_required")
+
     def test_load_rules_reads_city_owned_toml_and_flattens_match(self) -> None:
         rules_dir = pathlib.Path(self.tempdir.name) / "config" / "github-intake"
         rules_dir.mkdir(parents=True)

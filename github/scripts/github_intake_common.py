@@ -1235,6 +1235,19 @@ def create_check_run(
     output: dict[str, Any],
 ) -> dict[str, Any]:
     token = create_installation_token(app_cfg, installation_id)
+    return create_check_run_with_token(token, owner, repo, head_sha, name, status, conclusion, output)
+
+
+def create_check_run_with_token(
+    token: str,
+    owner: str,
+    repo: str,
+    head_sha: str,
+    name: str,
+    status: str,
+    conclusion: str | None,
+    output: dict[str, Any],
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
         "head_sha": head_sha,
@@ -1249,6 +1262,61 @@ def create_check_run(
         payload=payload,
         bearer_token=token,
     )
+
+
+def update_check_run_with_token(
+    token: str,
+    owner: str,
+    repo: str,
+    check_run_id: str | int,
+    status: str,
+    conclusion: str | None,
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"status": status, "output": output}
+    if conclusion:
+        payload["conclusion"] = conclusion
+    return github_api_request(
+        "PATCH",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs/{check_run_id}",
+        payload=payload,
+        bearer_token=token,
+    )
+
+
+def list_pull_request_files_with_token(token: str, owner: str, repo: str, number: str) -> list[dict[str, Any]]:
+    """Return up to 100 changed files; a full page is intentionally inconclusive."""
+    path = (
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+        f"/pulls/{urllib.parse.quote(str(number))}/files?per_page=100&page=1"
+    )
+    if path.startswith("http://") or path.startswith("https://"):
+        url = path
+    else:
+        url = urllib.parse.urljoin(GITHUB_API_BASE.rstrip("/") + "/", path.lstrip("/"))
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "gas-city-github/0.1",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        message = raw.decode("utf-8", errors="replace")
+        raise GitHubAPIError(f"GET {url} failed with {exc.code}: {message}") from exc
+    except urllib.error.URLError as exc:
+        raise GitHubAPIError(f"GET {url} failed: {exc}") from exc
+    data = json.loads(raw.decode("utf-8")) if raw else []
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise GitHubAPIError(f"GET {url} returned non-list JSON")
+    return data
 
 
 def create_pull_request(
