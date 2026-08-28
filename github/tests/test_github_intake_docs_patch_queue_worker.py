@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
 import github_intake_docs_patch_queue_worker as queue_worker
-from github.tests.test_github_intake_docs_patch_worker import assignment, write_adapter, write_skill
+from github.tests.test_github_intake_docs_patch_worker import assignment, review, write_adapter, write_skill
 
 
 class DocsPatchQueueWorkerTests(unittest.TestCase):
@@ -61,6 +61,28 @@ class DocsPatchQueueWorkerTests(unittest.TestCase):
                 0,
             )
             self.assertFalse((artifacts / assignment_file.name).exists())
+
+    def test_matching_digest_wrong_revision_candidate_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            assignments, artifacts = root / "assignments", root / "artifacts"
+            assignments.mkdir()
+            artifacts.mkdir()
+            assignment_file = assignments / "revision-bound.json"
+            assignment_file.write_text(json.dumps(assignment()), encoding="utf-8")
+            candidate_file = artifacts / assignment_file.name
+            candidate_file.write_text(queue_worker.docs_patch.canonical_json({
+                "schema_version": 1,
+                "snapshot_sha256": queue_worker.snapshot_sha256(assignment_file),
+                "artifact": queue_worker.docs_patch.validate_agent_review(review("b" * 40)),
+            }) + "\n", encoding="utf-8")
+
+            self.assertEqual(
+                queue_worker.consume_once(assignments, artifacts, adapter_command="", skill_dir=write_skill(root)),
+                0,
+            )
+
+            self.assertFalse(candidate_file.exists())
 
     def test_recomputes_candidate_when_assignment_changes_for_same_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

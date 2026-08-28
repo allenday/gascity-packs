@@ -35,17 +35,21 @@ def queue_artifact(snapshot_digest: str, artifact: dict[str, Any]) -> dict[str, 
     }
 
 
-def artifact_is_current(artifact_file: pathlib.Path, digest: str) -> bool:
+def artifact_is_current(artifact_file: pathlib.Path, raw: bytes) -> bool:
     try:
+        assignment = worker.load_assignment_bytes(raw)
         value = json.loads(artifact_file.read_text(encoding="utf-8"))
-        return (
-            isinstance(value, dict)
-            and set(value) == {"schema_version", "snapshot_sha256", "artifact"}
-            and value["schema_version"] == QUEUE_ARTIFACT_SCHEMA_VERSION
-            and value["snapshot_sha256"] == digest
-            and isinstance(value["artifact"], dict)
-            and docs_patch.validate_agent_review(value["artifact"])
-        )
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema_version", "snapshot_sha256", "artifact"}
+            or type(value["schema_version"]) is not int
+            or value["schema_version"] != QUEUE_ARTIFACT_SCHEMA_VERSION
+            or value["snapshot_sha256"] != snapshot_sha256_bytes(raw)
+            or not isinstance(value["artifact"], dict)
+        ):
+            return False
+        review = docs_patch.validate_agent_review(value["artifact"])
+        return review["identity"] == assignment["identity"] and review["agent_skill"] == assignment["agent_skill"]
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return False
 
@@ -79,7 +83,7 @@ def consume_snapshot(
 ) -> bool:
     """Process precisely the bytes read by the queue scan, never rereading its path."""
     digest = snapshot_sha256_bytes(raw)
-    if artifact_is_current(artifact_file, digest):
+    if artifact_is_current(artifact_file, raw):
         return False
     try:
         worker.remove_artifact(artifact_file)

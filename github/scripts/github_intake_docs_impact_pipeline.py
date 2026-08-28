@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Run the trusted PR handoff around the isolated, tokenless TechDocs worker.
+"""Queue one PR revision and publish only its exact completed TechDocs review.
 
-This program deliberately does not generate documentation prose.  A TechDocs
-producer may place a proposal for the exact revision in its private proposal
-inbox; this supervisor snapshots that proposal plus a bounded list of changed
-paths, runs the tokenless worker, and gives only its artifact to the trusted
-Check Run projector.  In the absence of a proposal it still publishes a clear
-human review result instead of pretending that an artifact exists.
+This trusted command runs with a short-lived GitHub installation token. It
+queues the sanitized assignment consumed by the isolated worker, waits for the
+matching outbox envelope, independently validates the exact assignment bytes
+and candidate binding, then delegates projection and publication to the
+idempotent docs-impact boundary. Missing or invalid output creates no check.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -21,90 +21,116 @@ from typing import Any, Callable
 
 import github_intake_common as common
 import github_intake_docs_impact as docs_impact
+import github_intake_docs_patch as docs_patch
+import github_intake_docs_patch_worker as patch_worker
 import github_intake_service as service
+
+QUEUE_ARTIFACT_SCHEMA_VERSION = 1
 
 
 def changed_paths(token: str, context: dict[str, str]) -> list[str]:
-    files = common.list_pull_request_files_with_token(token, context["owner"], context["repo"], context["number"])
+    files = common.list_pull_request_files_with_token(
+        token, context["owner"], context["repo"], context["number"],
+    )
     paths = [str(file.get("filename", "")).strip() for file in files]
     return sorted({path for path in paths if path})
 
 
-def proposal_inbox_path(context: dict[str, str]) -> pathlib.Path:
-    root = pathlib.Path(os.environ.get("GC_GITHUB_DOCS_PATCH_PROPOSAL_DIR", pathlib.Path(common.data_dir()) / "docs-patch-proposals"))
-    return root / f"{common.safe_storage_id(service.github_pr_source_key(context), 'proposal')}.json"
-
-
-def read_proposal(path: pathlib.Path | None) -> dict[str, Any] | None:
-    if path is None or not path.is_file():
-        return None
+def validate_review_candidate(raw_assignment: bytes, value: Any) -> dict[str, Any] | None:
+    """Validate one outbox envelope against precisely the assignment bytes read."""
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        assignment = patch_worker.load_assignment_bytes(raw_assignment)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema_version", "snapshot_sha256", "artifact"}
+            or type(value["schema_version"]) is not int
+            or value["schema_version"] != QUEUE_ARTIFACT_SCHEMA_VERSION
+            or value["snapshot_sha256"] != hashlib.sha256(raw_assignment).hexdigest()
+            or not isinstance(value["artifact"], dict)
+        ):
+            return None
+        review = docs_patch.validate_agent_review(value["artifact"])
+    except (KeyError, TypeError, ValueError):
         return None
-    if isinstance(value, dict) and isinstance(value.get("proposal"), dict):
-        return value["proposal"]
-    return value if isinstance(value, dict) else None
-
-
-def job_name(context: dict[str, str]) -> str:
-    """Stable queue identity for one immutable pull-request head."""
-    return common.safe_storage_id(service.github_pr_source_key(context), "docs-patch-handoff")
-
-
-def snapshot_sha256(snapshot_file: pathlib.Path) -> str:
-    import hashlib
-    return hashlib.sha256(snapshot_file.read_bytes()).hexdigest()
-
-
-def unwrap_current_artifact(snapshot_file: pathlib.Path, value: Any) -> dict[str, Any] | None:
-    """Reject output unless its protocol version and digest match this job exactly."""
-    if not isinstance(value, dict):
+    if review["identity"] != assignment["identity"] or review["agent_skill"] != assignment["agent_skill"]:
         return None
-    if set(value) != {"schema_version", "snapshot_sha256", "artifact"}:
-        return None
-    if value.get("schema_version") != 1 or value.get("snapshot_sha256") != snapshot_sha256(snapshot_file):
-        return None
-    artifact = value.get("artifact")
-    return artifact if isinstance(artifact, dict) else None
+    return review
 
 
-def wait_for_sidecar_artifact(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> dict[str, Any] | None:
-    """Consume only the artifact produced for this revision-bound queue item."""
-    timeout = max(0.0, float(os.environ.get("GC_GITHUB_DOCS_PATCH_WAIT_SECONDS", "15")))
-    deadline = time.monotonic() + timeout
-    while time.monotonic() <= deadline:
-        value = common.read_json(artifact_file, None)
-        artifact = unwrap_current_artifact(snapshot_file, value)
-        if artifact is not None:
-            return artifact
+def load_review_candidate(
+    assignment_file: pathlib.Path, artifact_file: pathlib.Path,
+) -> dict[str, Any] | None:
+    """Read both trust-boundary files and return only their exact valid review."""
+    try:
+        raw_assignment = assignment_file.read_bytes()
+        envelope = json.loads(artifact_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return validate_review_candidate(raw_assignment, envelope)
+
+
+def wait_for_sidecar_review(
+    assignment_file: pathlib.Path, artifact_file: pathlib.Path, wait_seconds: float,
+) -> dict[str, Any] | None:
+    """Wait a bounded interval for the exact revision-bound review candidate."""
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        review = load_review_candidate(assignment_file, artifact_file)
+        if review is not None:
+            return review
+        if time.monotonic() >= deadline:
+            return None
         time.sleep(0.1)
-    return None
+
+
+def configured_wait_seconds() -> float:
+    raw = os.environ.get(
+        "GC_GITHUB_DOCS_REVIEW_WAIT_SECONDS",
+        os.environ.get("GC_GITHUB_DOCS_PATCH_WAIT_SECONDS", "15"),
+    )
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
 
 
 def run_handoff(
-    payload: dict[str, Any], delivery_id: str, token: str, proposal_file: pathlib.Path | None,
-    snapshot_dir: pathlib.Path, artifact_dir: pathlib.Path,
-    wait_for_artifact: Callable[[pathlib.Path, pathlib.Path], dict[str, Any] | None] = wait_for_sidecar_artifact,
+    payload: dict[str, Any],
+    delivery_id: str,
+    token: str,
+    snapshot_dir: pathlib.Path,
+    artifact_dir: pathlib.Path,
+    wait_for_review: Callable[[pathlib.Path, pathlib.Path, float], dict[str, Any] | None] = wait_for_sidecar_review,
+    *,
+    wait_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Enqueue a safe worker handoff and project its sidecar artifact for this SHA."""
+    """Queue, consume, project, and publish one immutable PR revision."""
     context = service.github_pr_context(payload)
     paths = changed_paths(token, context)
-    proposal = read_proposal(proposal_file)
-    artifact: dict[str, Any] | None = None
-    if proposal is not None:
-        snapshot_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        name = job_name(context)
-        snapshot_file = snapshot_dir / f"{name}.json"
-        artifact_file = artifact_dir / f"{name}.json"
-        common.atomic_write_json(snapshot_file, {
-            "schema_version": 1, "proposal": proposal,
-            "identity": {key: context[key] for key in ("repository_id", "repository", "number", "head_sha", "base_ref")},
-            "changed_paths": paths,
-        })
-        artifact = wait_for_artifact(snapshot_file, artifact_file)
-    return docs_impact.evaluate(payload, delivery_id, token, artifact, paths=paths)
+    queued = docs_impact.evaluate(payload, delivery_id, token, paths=paths)
+    try:
+        assignment_file = pathlib.Path(str(queued["assignment_path"]))
+        source = queued["source"]
+    except (KeyError, TypeError):
+        return {"status": "queued", "reason": "assignment_result_invalid", "head_sha": context["head_sha"]}
+    if (
+        not isinstance(source, dict)
+        or assignment_file.suffix != ".json"
+        or assignment_file.parent.resolve() != snapshot_dir.resolve()
+    ):
+        return {"status": "queued", "reason": "assignment_path_invalid", "head_sha": context["head_sha"]}
+    artifact_file = artifact_dir / assignment_file.name
+    review = wait_for_review(
+        assignment_file,
+        artifact_file,
+        configured_wait_seconds() if wait_seconds is None else max(0.0, wait_seconds),
+    )
+    if review is None:
+        return queued
+    record = docs_impact.project_agent_review(context, source, review)
+    if record is None:
+        return {"status": "candidate_rejected", "head_sha": context["head_sha"]}
+    return docs_impact.publish_agent_review(token, context, review)
 
 
 def main() -> int:
@@ -112,6 +138,7 @@ def main() -> int:
     parser.add_argument("--payload-file", default=os.environ.get("GC_GITHUB_EVENT_PAYLOAD_FILE", ""))
     parser.add_argument("--delivery-id", default=os.environ.get("GC_GITHUB_DELIVERY_ID", ""))
     parser.add_argument("--token-env", default="GH_TOKEN")
+    parser.add_argument("--wait-seconds", type=float, default=configured_wait_seconds())
     args = parser.parse_args()
     if not args.payload_file:
         parser.error("--payload-file or GC_GITHUB_EVENT_PAYLOAD_FILE is required")
@@ -120,13 +147,14 @@ def main() -> int:
         parser.error(f"{args.token_env} is required")
     with open(args.payload_file, encoding="utf-8") as handle:
         payload = docs_impact.webhook_payload(json.load(handle))
-    context = service.github_pr_context(payload)
-    proposal_file = proposal_inbox_path(context)
     root = pathlib.Path(common.data_dir())
     print(json.dumps(run_handoff(
-        payload, args.delivery_id, token, proposal_file,
+        payload,
+        args.delivery_id,
+        token,
         pathlib.Path(os.environ.get("GC_GITHUB_DOCS_PATCH_SNAPSHOT_DIR", root / "docs-patch-snapshots")),
         pathlib.Path(os.environ.get("GC_GITHUB_DOCS_PATCH_ARTIFACT_DIR", root / "docs-patch-artifacts")),
+        wait_seconds=args.wait_seconds,
     ), sort_keys=True))
     return 0
 

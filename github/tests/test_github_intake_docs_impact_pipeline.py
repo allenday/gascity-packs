@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
+import shlex
 import sys
 import tempfile
 import unittest
@@ -10,64 +12,161 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
 import github_intake_docs_impact_pipeline as pipeline
+import github_intake_docs_patch_queue_worker as queue_worker
+from github.tests.test_github_intake_docs_patch_worker import (
+    assignment,
+    review,
+    write_adapter,
+    write_skill,
+)
+
+
+def payload(head_sha: str = "a" * 40) -> dict[str, object]:
+    return {
+        "repository": {
+            "id": 17,
+            "full_name": "allenday/demo",
+            "name": "demo",
+            "owner": {"login": "allenday"},
+        },
+        "number": 9,
+        "pull_request": {
+            "number": 9,
+            "html_url": "https://github.com/allenday/demo/pull/9",
+            "head": {"sha": head_sha},
+            "base": {"sha": "b" * 40, "ref": "main"},
+        },
+        "installation": {"id": 44},
+    }
+
+
+def envelope(raw: bytes, candidate: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "snapshot_sha256": hashlib.sha256(raw).hexdigest(),
+        "artifact": candidate,
+    }
 
 
 class DocsImpactPipelineTests(unittest.TestCase):
-    def test_sidecar_output_requires_the_exact_snapshot_digest_and_protocol_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            snapshot = pathlib.Path(temp_dir) / "snapshot.json"
-            snapshot.write_text('{"schema_version":1}', encoding="utf-8")
-            artifact = {"from": "sidecar"}
-            current = {"schema_version": 1, "snapshot_sha256": pipeline.snapshot_sha256(snapshot), "artifact": artifact}
+    def test_candidate_requires_exact_assignment_digest_identity_and_skill(self) -> None:
+        raw = json.dumps(assignment()).encode("utf-8")
+        valid = envelope(raw, review())
+        canonical = pipeline.validate_review_candidate(raw, valid)
 
-            self.assertEqual(pipeline.unwrap_current_artifact(snapshot, current), artifact)
-            self.assertIsNone(pipeline.unwrap_current_artifact(snapshot, {**current, "snapshot_sha256": "0" * 64}))
-            self.assertIsNone(pipeline.unwrap_current_artifact(snapshot, {**current, "schema_version": 2}))
+        self.assertIsNotNone(canonical)
+        self.assertEqual(canonical["identity"], assignment()["identity"])
+        self.assertEqual(canonical["agent_skill"], assignment()["agent_skill"])
+        invalid = [
+            {**valid, "schema_version": True},
+            {**valid, "snapshot_sha256": "0" * 64},
+            envelope(raw, review("b" * 40)),
+            {**valid, "artifact": {**review(), "agent_skill": "another-skill"}},
+            {"schema_version": 1, "snapshot_sha256": valid["snapshot_sha256"]},
+        ]
+        for candidate in invalid:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(pipeline.validate_review_candidate(raw, candidate))
 
-    def test_handoff_enqueues_sanitized_snapshot_and_consumes_sidecar_artifact(self) -> None:
-        payload = {
-            "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
-            "number": 9,
-            "pull_request": {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}},
-        }
-        proposal = {"schema_version": 1, "proposal": {"safe": "input"}}
+    def test_malformed_stale_or_mismatched_candidate_never_reaches_projector(self) -> None:
+        raw = json.dumps(assignment()).encode("utf-8")
+        invalid = [
+            {"not": "an envelope"},
+            envelope(raw, review("b" * 40)),
+            {**envelope(raw, review()), "snapshot_sha256": "0" * 64},
+        ]
+        for index, candidate in enumerate(invalid):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as temp_dir:
+                root = pathlib.Path(temp_dir)
+                assignments, artifacts = root / "assignments", root / "artifacts"
+                assignments.mkdir()
+                artifacts.mkdir()
+                assignment_file = assignments / "revision.json"
+                assignment_file.write_bytes(raw)
+                artifact_file = artifacts / assignment_file.name
+                artifact_file.write_text(json.dumps(candidate), encoding="utf-8")
+                queued = {
+                    "status": "queued",
+                    "source": {"source_key": assignment()["identity"]["source_key"]},
+                    "assignment": assignment(),
+                    "assignment_path": str(assignment_file),
+                    "head_sha": "a" * 40,
+                }
+                with mock.patch.object(
+                    pipeline.common, "list_pull_request_files_with_token", return_value=[]
+                ), mock.patch.object(
+                    pipeline.docs_impact, "evaluate", return_value=queued
+                ), mock.patch.object(
+                    pipeline.docs_impact, "project_agent_review"
+                ) as project, mock.patch.object(
+                    pipeline.docs_impact, "publish_agent_review"
+                ) as publish:
+                    result = pipeline.run_handoff(
+                        payload(),
+                        "delivery-1",
+                        "token",
+                        assignments,
+                        artifacts,
+                        pipeline.wait_for_sidecar_review,
+                        wait_seconds=0,
+                    )
+
+                self.assertEqual(result["status"], "queued")
+                project.assert_not_called()
+                publish.assert_not_called()
+
+    def test_assignment_to_adapter_candidate_to_trusted_check(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
-            proposal_file = root / "proposal.json"
-            proposal_file.write_text(json.dumps(proposal), encoding="utf-8")
-            captured: dict[str, object] = {}
+            assignments, artifacts = root / "assignments", root / "artifacts"
+            adapter, skill = write_adapter(root), write_skill(root)
+            source_key = assignment()["identity"]["source_key"]
+            source = {"status": "created", "bead_id": "mc-private", "source_key": source_key}
+            with mock.patch.dict("os.environ", {
+                "GC_SERVICE_STATE_ROOT": str(root / "state"),
+                "GC_GITHUB_DOCS_PATCH_SNAPSHOT_DIR": str(assignments),
+            }), mock.patch.object(
+                pipeline.common,
+                "list_pull_request_files_with_token",
+                return_value=[{"filename": "docs/guide.md"}],
+            ), mock.patch.object(
+                pipeline.docs_impact, "create_source", return_value=source
+            ), mock.patch.object(
+                pipeline.service.common, "create_check_run_with_token", return_value={"id": 81}
+            ) as create_check:
 
-            def wait_for_artifact(snapshot_file: pathlib.Path, artifact_file: pathlib.Path) -> dict[str, object] | None:
-                captured["snapshot"] = json.loads(snapshot_file.read_text(encoding="utf-8"))
-                artifact_file.write_text(json.dumps({"artifact": "from-worker"}), encoding="utf-8")
-                return json.loads(artifact_file.read_text(encoding="utf-8"))
+                def complete_adapter_work(
+                    assignment_file: pathlib.Path, artifact_file: pathlib.Path, wait_seconds: float,
+                ) -> dict[str, object] | None:
+                    self.assertTrue(assignment_file.exists())
+                    self.assertFalse(artifact_file.exists())
+                    create_check.assert_not_called()
+                    self.assertEqual(queue_worker.consume_once(
+                        assignments,
+                        artifacts,
+                        adapter_command=shlex.join([sys.executable, str(adapter)]),
+                        skill_dir=skill,
+                    ), 1)
+                    return pipeline.wait_for_sidecar_review(assignment_file, artifact_file, wait_seconds)
 
-            with mock.patch.object(pipeline.common, "list_pull_request_files_with_token", return_value=[{"filename": "src/widget.py"}]), mock.patch.object(
-                pipeline.docs_impact, "evaluate", return_value={"outcome": "proposed"}
-            ) as evaluate:
                 result = pipeline.run_handoff(
-                    payload, "delivery-1", "secret", proposal_file, root / "snapshots", root / "artifacts", wait_for_artifact,
+                    payload(),
+                    "delivery-1",
+                    "token",
+                    assignments,
+                    artifacts,
+                    complete_adapter_work,
+                    wait_seconds=0,
                 )
 
-        self.assertEqual(result["outcome"], "proposed")
-        self.assertEqual(captured["snapshot"]["changed_paths"], ["src/widget.py"])
-        self.assertEqual(captured["snapshot"]["proposal"], proposal["proposal"])
-        self.assertEqual(evaluate.call_args.args[3], {"artifact": "from-worker"})
-        self.assertNotIn("secret", json.dumps(captured["snapshot"]))
-
-    def test_handoff_without_proposal_evaluates_human_friendly_fallback(self) -> None:
-        payload = {
-            "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
-            "number": 9,
-            "pull_request": {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}},
-        }
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
-            pipeline.common, "list_pull_request_files_with_token", return_value=[{"filename": "github/scripts/intake.py"}]
-        ), mock.patch.object(pipeline.docs_impact, "evaluate", return_value={"outcome": "needs-human-decision"}) as evaluate:
-            result = pipeline.run_handoff(
-                payload, "delivery-1", "secret", None, pathlib.Path(temp_dir) / "snapshots", pathlib.Path(temp_dir) / "artifacts", mock.Mock(),
-            )
-
-        self.assertEqual(result["outcome"], "needs-human-decision")
-        self.assertEqual(evaluate.call_args.args[3], None)
-        self.assertEqual(evaluate.call_args.kwargs["paths"], ["github/scripts/intake.py"])
+            self.assertEqual(result["status"], "published")
+            create_check.assert_called_once()
+            self.assertEqual(create_check.call_args.args[5:7], ("completed", "success"))
+            record = pipeline.service.load_docs_impact_run({
+                "repository_id": "17",
+                "repository": "allenday/demo",
+                "number": "9",
+                "head_sha": "a" * 40,
+            })
+            self.assertEqual(record["check_run_id"], "81")
+            self.assertNotIn("mc-private", pipeline.service.render_docs_impact_run(record))

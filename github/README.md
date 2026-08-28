@@ -27,12 +27,14 @@ The current slice ships:
 
 ## Pull-request documentation impact (patch-first)
 
-For configured `pull_request` events, the docs-impact rule records immutable
-source evidence for the exact PR head SHA and queues a revision-bound City
-TechDocs assignment. A trusted projector can publish the `Gas City /
-docs-impact` Check Run only after accepting a completed review for that exact
-revision. Neither the worker nor the check writes to the PR branch or opens a
-pull request.
+For configured `pull_request` events, the credentialed docs-impact rule records
+immutable source evidence for the exact PR head SHA and queues a revision-bound
+City TechDocs assignment. The rule waits up to
+`GC_GITHUB_DOCS_REVIEW_WAIT_SECONDS` (305 seconds in the Compose profile) for
+the isolated worker's candidate. It verifies the envelope against the exact
+assignment bytes, matches the review identity and requested skill, and only
+then projects and publishes the `Gas City / docs-impact` Check Run. Neither the
+worker nor the check writes to the PR branch or opens a pull request.
 
 The trusted intake supervisor validates and persists the first accepted review
 for a revision. `no-impact` and `docs-sufficient` are successful conclusions;
@@ -60,7 +62,9 @@ The worker's public adapter contract is deliberately runtime-neutral:
 No agent runtime is bundled or inferred. If the command is unset, missing,
 times out, exits unsuccessfully, or returns an invalid or mismatched review,
 the worker removes any stale candidate and writes no artifact. Consequently
-the trusted side cannot project a verdict and no GitHub check is published.
+the trusted rule cannot project a verdict and no GitHub check is published. A
+candidate that arrives after the configured wait window remains unpublished
+until a matching event processes that revision again.
 
 The `/gc fix` path posts a queued-in-bugflow acknowledgement after the bugflow
 source bead and router scan succeed. Bugflow snapshots the issue and comments,
