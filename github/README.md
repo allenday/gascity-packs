@@ -41,7 +41,15 @@ for a revision. `no-impact` and `docs-sufficient` are successful conclusions;
 `docs-change-required`, `proposal-ready`, and `inconclusive` require action. A
 `proposal-ready` review may carry a bounded, evidence-backed documentation diff.
 
-The untrusted worker receives only a sanitized, revision-bound assignment and
+The egress-enabled `github-docs-techdocs-reviewer` sidecar receives only a
+bounded exact-SHA evidence bundle (textual per-file PR patches plus immutable
+`github://…/blob/<head-sha>/…` references) and the vendored TechDocs skill. It
+runs no cagent tools, disables telemetry, defaults to `gpt-5.6-terra` with
+medium reasoning, and may receive only `GC_TECHDOCS_MODEL_TOKEN`. Configure
+its OpenAI-compatible base URL with `GC_TECHDOCS_MODEL_ENDPOINT`; never put a
+GitHub App credential in that service. Its raw review is not publishable.
+
+The untrusted worker receives only the same sanitized, revision-bound assignment and
 the vendored `developer-experience-techdocs` skill. It has no GitHub or git
 credentials, City/config mount, writable supervisor state, or network access.
 A new PR head SHA creates a new source identity and is evaluated independently;
@@ -59,7 +67,14 @@ The worker's public adapter contract is deliberately runtime-neutral:
   assignment identity, and only then writes a canonical candidate to the
   isolated artifact outbox.
 
-No agent runtime is bundled or inferred. If the command is unset, missing,
+The networkless worker is validator-only for this deployment: it validates the
+sidecar's candidate, binds it to the exact assignment digest, and writes the
+private envelope that the trusted supervisor alone can project and publish.
+If the reviewer is missing, times out, exits unsuccessfully, or returns an
+invalid or mismatched review, the worker removes any stale candidate and no
+artifact or GitHub check is published.
+
+The legacy generic adapter command remains available for isolated tests. If it is unset, missing,
 times out, exits unsuccessfully, or returns an invalid or mismatched review,
 the worker removes any stale candidate and writes no artifact. Consequently
 the trusted rule cannot project a verdict and no GitHub check is published. A

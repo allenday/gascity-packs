@@ -137,13 +137,13 @@ def webhook_payload(document: dict[str, Any]) -> dict[str, Any]:
 
 def evaluate(
     payload: dict[str, Any], delivery_id: str, token: str, artifact: dict[str, Any] | None = None,
-    paths: list[str] | None = None,
+    paths: list[str] | None = None, evidence_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = service.github_pr_context(payload)
     source = create_source(payload, delivery_id, context)
     if source.get("status") not in {"created", "duplicate"}:
         raise RuntimeError(f"could not create source bead: {source.get('reason', source.get('status'))}")
-    queue = service.queue_agent_review(context, source, paths or [])
+    queue = service.queue_agent_review(context, source, paths or [], evidence_bundle)
     if queue.get("status") not in {"queued", "duplicate"}:
         raise RuntimeError(f"could not queue agent review: {queue.get('reason', queue.get('status'))}")
     return {"status": "queued", "source": source, "assignment": queue["assignment"],

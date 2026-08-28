@@ -105,6 +105,7 @@ def consume_once(
     adapter_command: str | None = None,
     skill_dir: pathlib.Path | None = None,
     adapter_timeout_seconds: float | None = None,
+    candidate_dir: pathlib.Path | None = None,
 ) -> int:
     """Publish completed reviews for assignments lacking a matching envelope."""
     worker.reject_credentials()
@@ -121,6 +122,22 @@ def consume_once(
     handled = 0
     for snapshot_file in sorted(snapshot_dir.glob("*.json")):
         artifact_file = artifact_dir / snapshot_file.name
+        # The egress reviewer writes an untrusted raw candidate to its private
+        # return directory.  This networkless worker remains the sole local
+        # validator/envelope writer; it never invokes a model in this mode.
+        if candidate_dir is not None:
+            try:
+                raw = snapshot_file.read_bytes()
+                candidate_file = candidate_dir / snapshot_file.name
+                candidate = json.loads(candidate_file.read_text(encoding="utf-8"))
+                if not artifact_is_current(artifact_file, raw):
+                    review = docs_patch.validate_agent_review(candidate)
+                    assignment = worker.load_assignment_bytes(raw)
+                    if review["identity"] == assignment["identity"] and review["agent_skill"] == assignment["agent_skill"]:
+                        write_queue_artifact(artifact_file, queue_artifact(snapshot_sha256_bytes(raw), review)); handled += 1
+                continue
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
         try:
             if consume_snapshot(
                 snapshot_file,
@@ -150,6 +167,7 @@ def main() -> int:
         default=float(os.environ.get("GC_TECHDOCS_ADAPTER_TIMEOUT_SECONDS", "300")),
     )
     parser.add_argument("--poll-seconds", type=float, default=0.2)
+    parser.add_argument("--candidate-dir", default=os.environ.get("GC_TECHDOCS_CANDIDATE_DIR", ""))
     args = parser.parse_args()
     snapshot_dir, artifact_dir = pathlib.Path(args.snapshot_dir), pathlib.Path(args.artifact_dir)
     while True:
@@ -159,6 +177,7 @@ def main() -> int:
             adapter_command=args.adapter_command,
             skill_dir=pathlib.Path(args.skill_dir),
             adapter_timeout_seconds=args.adapter_timeout_seconds,
+            candidate_dir=pathlib.Path(args.candidate_dir) if args.candidate_dir else None,
         )
         time.sleep(max(0.05, args.poll_seconds))
 

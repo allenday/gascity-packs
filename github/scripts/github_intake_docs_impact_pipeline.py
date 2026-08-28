@@ -36,6 +36,18 @@ def changed_paths(token: str, context: dict[str, str]) -> list[str]:
     return sorted({path for path in paths if path})
 
 
+def evidence_bundle(token: str, context: dict[str, str]) -> dict[str, Any]:
+    """Bound the reviewer input to textual PR evidence at the exact head SHA."""
+    files = common.list_pull_request_files_with_token(token, context["owner"], context["repo"], context["number"])
+    entries: list[dict[str, str]] = []
+    for file in files[:100]:
+        path, patch = str(file.get("filename", "")).strip(), file.get("patch")
+        if path and isinstance(patch, str) and patch:
+            entries.append({"path": path, "reference": f"github://{context['repository']}/blob/{context['head_sha']}/{path}", "patch": patch})
+    entries.sort(key=lambda value: value["path"])
+    return {"head_sha": context["head_sha"], "files": entries}
+
+
 def validate_review_candidate(raw_assignment: bytes, value: Any) -> dict[str, Any] | None:
     """Validate one outbox envelope against precisely the assignment bytes read."""
     try:
@@ -106,8 +118,8 @@ def run_handoff(
 ) -> dict[str, Any]:
     """Queue, consume, project, and publish one immutable PR revision."""
     context = service.github_pr_context(payload)
-    paths = changed_paths(token, context)
-    queued = docs_impact.evaluate(payload, delivery_id, token, paths=paths)
+    bundle = evidence_bundle(token, context)
+    queued = docs_impact.evaluate(payload, delivery_id, token, paths=[item["path"] for item in bundle["files"]], evidence_bundle=bundle)
     try:
         assignment_file = pathlib.Path(str(queued["assignment_path"]))
         source = queued["source"]

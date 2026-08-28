@@ -890,7 +890,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
             "head_sha": "a" * 40, "source_key": "github-pr:17:9:" + "a" * 40,
         })
         self.assertEqual(created["assignment"]["agent_skill"], "developer-experience-techdocs")
-        self.assertEqual(created["assignment"]["changed_paths"], ["docs/guide.md", "src/cli.py"])
+        self.assertEqual([item["path"] for item in created["assignment"]["evidence_bundle"]["files"]], ["docs/guide.md", "src/cli.py"])
         self.assertEqual(service.common.read_json(created["assignment_path"]), created["assignment"])
         self.assertNotEqual(created["assignment_path"], next_revision["assignment_path"])
 
@@ -904,7 +904,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
             "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
                          "head_sha": "a" * 40, "source_key": source["source_key"]},
             "agent_skill": "developer-experience-techdocs",
-            "changed_paths": ["src/cli.py"],
+            "evidence_bundle": {"head_sha": "a" * 40, "files": [{"path": "src/cli.py", "reference": "github://allenday/demo/blob/" + "a" * 40 + "/src/cli.py", "patch": "Evidence content unavailable."}]},
         })
 
         result = service.queue_agent_review(context, source, ["src/cli.py"])
@@ -916,7 +916,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
             "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
                          "head_sha": "a" * 40, "source_key": source["source_key"]},
             "agent_skill": "developer-experience-techdocs",
-            "changed_paths": ["src/cli.py"],
+            "evidence_bundle": {"head_sha": "a" * 40, "files": [{"path": "src/cli.py", "reference": "github://allenday/demo/blob/" + "a" * 40 + "/src/cli.py", "patch": "Evidence content unavailable."}]},
         })
         self.assertEqual(service.common.read_json(assignment_path), result["assignment"])
 

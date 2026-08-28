@@ -10,11 +10,14 @@ import tempfile
 import textwrap
 import unittest
 
+sys.path.insert(0, str(WORKER.parent) if "WORKER" in globals() else str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+
 
 WORKER = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "github_intake_docs_patch_worker.py"
 
 
 def assignment(head_sha: str = "a" * 40, changed_paths: list[str] | None = None) -> dict[str, object]:
+    paths = changed_paths or ["docs/guide.md"]
     return {
         "schema_version": 1,
         "kind": "github-pr-docs-impact-assignment",
@@ -26,7 +29,14 @@ def assignment(head_sha: str = "a" * 40, changed_paths: list[str] | None = None)
             "source_key": "github-pr:17:9:" + head_sha,
         },
         "agent_skill": "developer-experience-techdocs",
-        "changed_paths": changed_paths or ["docs/guide.md"],
+        "evidence_bundle": {
+            "head_sha": head_sha,
+            "files": [{
+                "path": path,
+                "reference": "github://allenday/demo/blob/" + head_sha + "/" + path,
+                "patch": "@@ -1 +1 @@\n-old\n+new\n",
+            } for path in paths],
+        },
     }
 
 
@@ -82,8 +92,8 @@ def write_adapter(root: pathlib.Path) -> pathlib.Path:
             "verdict": args.verdict,
             "rationale": "The configured City TechDocs adapter completed its review.",
             "evidence": [{
-                "path": assignment["changed_paths"][0],
-                "evidence": "github://" + identity["repository"] + "/blob/" + head_sha + "/" + assignment["changed_paths"][0],
+                "path": assignment["evidence_bundle"]["files"][0]["path"],
+                "evidence": "github://" + identity["repository"] + "/blob/" + head_sha + "/" + assignment["evidence_bundle"]["files"][0]["path"],
             }],
             "confidence": 0.9,
             "proposal": None,
@@ -101,6 +111,14 @@ def write_skill(root: pathlib.Path) -> pathlib.Path:
 
 
 class DocsPatchWorkerTests(unittest.TestCase):
+    def test_assignment_rejects_paths_only_without_sha_pinned_evidence(self) -> None:
+        worker_module = __import__("github_intake_docs_patch_worker")
+        self.assertEqual(worker_module.validate_assignment(assignment())["evidence_bundle"]["head_sha"], "a" * 40)
+        value = assignment()
+        value["changed_paths"] = ["docs/guide.md"]
+        value.pop("evidence_bundle")
+        with self.assertRaises(ValueError):
+            worker_module.validate_assignment(value)
     def test_worker_passes_only_assignment_and_vendored_skill_to_configured_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

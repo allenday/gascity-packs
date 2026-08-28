@@ -1076,11 +1076,11 @@ def docs_impact_run_lock(context: dict[str, str]) -> Any:
 def is_complete_docs_impact_assignment(value: Any, identity: dict[str, Any]) -> bool:
     """Accept only a canonical descriptor for the source being queued."""
     if not isinstance(value, dict) or set(value) != {
-        "schema_version", "kind", "identity", "agent_skill", "changed_paths",
+        "schema_version", "kind", "identity", "agent_skill", "evidence_bundle",
     }:
         return False
     persisted_identity = value["identity"]
-    paths = value["changed_paths"]
+    evidence = value["evidence_bundle"]
     return (
         type(value["schema_version"]) is int
         and value["schema_version"] == DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION
@@ -1092,14 +1092,14 @@ def is_complete_docs_impact_assignment(value: Any, identity: dict[str, Any]) -> 
         ))
         and type(persisted_identity["pr_number"]) is int
         and value["agent_skill"] == DOCS_IMPACT_AGENT_SKILL
-        and isinstance(paths, list)
-        and len(paths) <= 100
-        and all(isinstance(path, str) and path.strip() == path and path for path in paths)
-        and paths == sorted(set(paths))
+        and isinstance(evidence, dict)
+        and evidence.get("head_sha") == identity["head_sha"]
+        and isinstance(evidence.get("files"), list)
+        and 0 < len(evidence["files"]) <= 100
     )
 
 
-def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: list[str], evidence_bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     """Write one sanitized TechDocs assignment for an immutable PR revision."""
     source_key = str(source.get("source_key", "")).strip()
     expected_source_key = github_pr_source_key(context)
@@ -1109,6 +1109,9 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
         pr_number = int(context["number"])
     except (KeyError, TypeError, ValueError):
         return {"status": "failed", "reason": "pr_number_invalid"}
+    normalized_paths = sorted({str(path).strip() for path in paths if str(path).strip()})[:100]
+    if evidence_bundle is None:
+        evidence_bundle = {"head_sha": context["head_sha"], "files": [{"path": path, "reference": f"github://{context['repository']}/blob/{context['head_sha']}/{path}", "patch": "Evidence content unavailable."} for path in normalized_paths]}
     assignment = {
         "schema_version": DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION,
         "kind": "github-pr-docs-impact-assignment",
@@ -1120,7 +1123,7 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
             "source_key": source_key,
         },
         "agent_skill": DOCS_IMPACT_AGENT_SKILL,
-        "changed_paths": sorted({str(path).strip() for path in paths if str(path).strip()})[:100],
+        "evidence_bundle": evidence_bundle,
     }
     assignment_path = docs_impact_assignment_path(context)
     with docs_impact_assignment_lock(assignment_path):

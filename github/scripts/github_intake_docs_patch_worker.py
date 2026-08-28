@@ -23,7 +23,7 @@ from typing import Any
 import github_intake_docs_patch as docs_patch
 
 ASSIGNMENT_SCHEMA_VERSION = 1
-ASSIGNMENT_FIELDS = {"schema_version", "kind", "identity", "agent_skill", "changed_paths"}
+ASSIGNMENT_FIELDS = {"schema_version", "kind", "identity", "agent_skill", "evidence_bundle"}
 ASSIGNMENT_IDENTITY_FIELDS = {"repository_id", "repository", "pr_number", "head_sha", "source_key"}
 AGENT_SKILL = "developer-experience-techdocs"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -67,14 +67,30 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     source_key = _required_text(identity["source_key"], "identity.source_key")
     if source_key != f"github-pr:{repository_id}:{pr_number}:{head_sha}":
         raise ValueError("identity.source_key does not match assignment identity")
-    changed_paths = value["changed_paths"]
+    evidence_bundle = value["evidence_bundle"]
     if (
-        not isinstance(changed_paths, list)
-        or len(changed_paths) > 100
-        or any(not isinstance(path, str) or not path or path.strip() != path for path in changed_paths)
-        or changed_paths != sorted(set(changed_paths))
+        not isinstance(evidence_bundle, dict)
+        or set(evidence_bundle) != {"head_sha", "files"}
+        or _required_text(evidence_bundle["head_sha"], "evidence_bundle.head_sha") != head_sha
+        or not isinstance(evidence_bundle["files"], list)
+        or not evidence_bundle["files"]
+        or len(evidence_bundle["files"]) > 100
     ):
-        raise ValueError("changed_paths must be a sorted unique list of at most 100 paths")
+        raise ValueError("evidence_bundle must be bounded and bound to the assignment SHA")
+    files: list[dict[str, str]] = []
+    for item in evidence_bundle["files"]:
+        if not isinstance(item, dict) or set(item) != {"path", "reference", "patch"}:
+            raise ValueError("evidence_bundle files must have exact fields")
+        path = _required_text(item["path"], "evidence_bundle.files.path")
+        reference = _required_text(item["reference"], "evidence_bundle.files.reference")
+        patch = item["patch"]
+        if not isinstance(patch, str) or not patch:
+            raise ValueError("evidence_bundle.files.patch must be non-empty text")
+        if reference != f"github://{repository}/blob/{head_sha}/{path}":
+            raise ValueError("evidence bundle reference must be immutable and SHA-pinned")
+        files.append({"path": path, "reference": reference, "patch": patch})
+    if [item["path"] for item in files] != sorted({item["path"] for item in files}):
+        raise ValueError("evidence bundle paths must be sorted and unique")
     return {
         "schema_version": ASSIGNMENT_SCHEMA_VERSION,
         "kind": "github-pr-docs-impact-assignment",
@@ -86,7 +102,7 @@ def validate_assignment(value: Any) -> dict[str, Any]:
             "source_key": source_key,
         },
         "agent_skill": AGENT_SKILL,
-        "changed_paths": list(changed_paths),
+        "evidence_bundle": {"head_sha": head_sha, "files": files},
     }
 
 

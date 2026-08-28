@@ -128,7 +128,7 @@ class DocsImpactPipelineTests(unittest.TestCase):
             }), mock.patch.object(
                 pipeline.common,
                 "list_pull_request_files_with_token",
-                return_value=[{"filename": "docs/guide.md"}],
+                return_value=[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}],
             ), mock.patch.object(
                 pipeline.docs_impact, "create_source", return_value=source
             ), mock.patch.object(
