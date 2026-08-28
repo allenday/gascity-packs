@@ -64,20 +64,16 @@ def check_output(title: str, summary: str, context: dict[str, str], source: dict
 
 
 def patch_check_output(
-    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any] | None, outcome: str, reason: str = ""
+    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any] | None, outcome: str, reason: str = "",
+    paths: list[str] | None = None,
 ) -> dict[str, str]:
     """Render an actionable, bounded public projection of validated artifact data."""
-    bead_id = str(source.get("bead_id", "unavailable"))
-    summary = [
-        "Gas City requires human review before this pull request can use documentation evidence.",
-        "",
-        f"Source bead: `{bead_id}`",
-        f"Source key: `{service.github_pr_source_key(context)}`",
-        f"Code SHA: `{context['head_sha']}`",
-    ]
+    summary: list[str] = []
     if outcome == "proposed" and artifact is not None:
         digest = str(artifact["artifact_sha256"])
         summary.extend([
+            "A documentation update was proposed for this pull request.",
+            "",
             f"Artifact digest: `{digest}`",
             "",
             "Apply this documentation patch through the approved review workflow; this check does not write a branch or open a pull request.",
@@ -87,6 +83,24 @@ def patch_check_output(
         if len(encoded) > MAX_CHECK_DIFF_BYTES:
             diff = encoded[:MAX_CHECK_DIFF_BYTES].decode("utf-8", errors="ignore").rstrip() + "\n…"
         return {"title": "Documentation update proposed", "summary": "\n".join(summary), "text": f"```diff\n{diff}\n```"}
+    classification, explanation = classify_paths(paths or [])
+    display_paths = ", ".join(f"`{path}`" for path in (paths or [])[:8]) or "no changed files"
+    if classification == "no-impact":
+        return {
+            "title": "No documentation update needed",
+            "summary": f"This revision changes {display_paths}. {explanation}",
+        }
+    task = (
+        "Update the developer documentation that explains the changed behavior, then push the documentation commit to this pull request."
+        if classification == "needs-human-decision"
+        else "Review the documentation already changed with this revision, or add the missing developer guidance, then push a new commit."
+    )
+    summary.extend([
+        f"This revision changes {display_paths}.",
+        explanation,
+        "",
+        f"Next step: {task}",
+    ])
     safe_reasons = {
         "artifact_unavailable": "No documentation patch artifact was supplied.",
         "artifact_invalid": "The documentation patch artifact failed validation.",
@@ -95,12 +109,9 @@ def patch_check_output(
         "unavailable": "The documentation proposal is unavailable.",
         "unsafe": "The documentation proposal was marked unsafe.",
     }
-    summary.extend([
-        "",
-        safe_reasons.get(reason, "The documentation proposal was unavailable or unsafe."),
-        "Human review is required; no patch text is published.",
-    ])
-    return {"title": "Documentation proposal unavailable", "summary": "\n".join(summary)}
+    if reason not in {"artifact_unavailable", ""}:
+        summary.extend(["", safe_reasons.get(reason, "The documentation proposal was unavailable or unsafe.")])
+    return {"title": "Documentation review needed", "summary": "\n".join(summary)}
 
 
 def artifact_matches_context(artifact: dict[str, Any], context: dict[str, str]) -> bool:
@@ -154,7 +165,10 @@ def webhook_payload(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-def evaluate(payload: dict[str, Any], delivery_id: str, token: str, artifact: dict[str, Any] | None = None) -> dict[str, Any]:
+def evaluate(
+    payload: dict[str, Any], delivery_id: str, token: str, artifact: dict[str, Any] | None = None,
+    paths: list[str] | None = None,
+) -> dict[str, Any]:
     context = service.github_pr_context(payload)
     source = create_source(payload, delivery_id, context)
     if source.get("status") not in {"created", "duplicate"}:
@@ -167,11 +181,13 @@ def evaluate(payload: dict[str, Any], delivery_id: str, token: str, artifact: di
     if not check_id:
         raise RuntimeError("GitHub did not return a check run id")
     projection = project_docs_patch(context, source, artifact)
+    classification, _ = classify_paths(paths or [])
+    outcome = projection["outcome"] if projection["outcome"] == "proposed" else classification
     completed = common.update_check_run_with_token(
-        token, context["owner"], context["repo"], check_id, "completed", "action_required",
-        patch_check_output(context, source, projection["artifact"], projection["outcome"], projection["reason"]),
+        token, context["owner"], context["repo"], check_id, "completed", conclusion_for(outcome),
+        patch_check_output(context, source, projection["artifact"], outcome, projection["reason"], paths),
     )
-    return {"outcome": projection["outcome"], "reason": projection["reason"], "source": source,
+    return {"outcome": outcome, "reason": projection["reason"], "source": source,
             "result": projection["result"], "check_run": completed, "head_sha": context["head_sha"]}
 
 

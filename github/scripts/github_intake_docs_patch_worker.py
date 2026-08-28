@@ -20,6 +20,7 @@ import github_intake_docs_patch as docs_patch
 
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_FIELDS = {"schema_version", "proposal"}
+SNAPSHOT_CONTEXT_FIELDS = SNAPSHOT_FIELDS | {"identity", "changed_paths"}
 FORBIDDEN_CREDENTIAL_ENV = (
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -35,8 +36,8 @@ def load_snapshot(snapshot_file: pathlib.Path) -> dict[str, Any]:
         value = json.loads(snapshot_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read sanitized snapshot: {exc}") from exc
-    if not isinstance(value, dict) or set(value) != SNAPSHOT_FIELDS:
-        raise ValueError("snapshot must contain exactly schema_version and proposal")
+    if not isinstance(value, dict) or (set(value) != SNAPSHOT_FIELDS and set(value) != SNAPSHOT_CONTEXT_FIELDS):
+        raise ValueError("snapshot must contain only the documented sanitized fields")
     if value.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
         raise ValueError(f"snapshot schema_version must be {SNAPSHOT_SCHEMA_VERSION}")
     proposal = value.get("proposal")

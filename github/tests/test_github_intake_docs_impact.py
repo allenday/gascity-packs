@@ -99,8 +99,21 @@ class DocsImpactTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "unavailable")
         self.assertEqual(result["reason"], "artifact_unavailable")
-        self.assertEqual(output["title"], "Documentation proposal unavailable")
+        self.assertEqual(output["title"], "Documentation review needed")
         self.assertNotIn("```diff", output.get("text", ""))
+
+    def test_fallback_check_explains_changed_code_and_next_step_without_internal_provenance(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        output = docs_impact.patch_check_output(
+            context, {"bead_id": "ga-source"}, None, "needs-human-decision", "artifact_unavailable",
+            ["github/scripts/github_intake_service.py"],
+        )
+
+        self.assertEqual(output["title"], "Documentation review needed")
+        self.assertIn("`github/scripts/github_intake_service.py`", output["summary"])
+        self.assertIn("Next step:", output["summary"])
+        self.assertNotIn("Source bead", output["summary"])
+        self.assertNotIn("Source key", output["summary"])
 
     def test_unavailable_and_unsafe_output_include_safe_specific_reasons(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
@@ -114,7 +127,7 @@ class DocsImpactTests(unittest.TestCase):
         unsafe_output = docs_impact.patch_check_output(
             context, {"bead_id": "ga-source"}, unsafe["artifact"], unsafe["outcome"], unsafe["reason"]
         )
-        self.assertIn("No documentation patch artifact was supplied.", unavailable_output["summary"])
+        self.assertIn("Next step:", unavailable_output["summary"])
         self.assertIn("The documentation proposal was marked unsafe.", unsafe_output["summary"])
         self.assertNotIn("```diff", unavailable_output.get("text", ""))
         self.assertNotIn("```diff", unsafe_output.get("text", ""))
@@ -145,7 +158,7 @@ class DocsImpactTests(unittest.TestCase):
         ) as update_check:
             result = docs_impact.evaluate(payload, "delivery-1", "token")
 
-        self.assertEqual(result["outcome"], "unavailable")
+        self.assertEqual(result["outcome"], "needs-human-decision")
         self.assertEqual(create_check.call_args.args[3], "a" * 40)
         self.assertEqual(update_check.call_args.args[3], 81)
         self.assertEqual(update_check.call_args.args[5], "action_required")
