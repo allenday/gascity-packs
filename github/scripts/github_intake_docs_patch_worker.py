@@ -30,11 +30,11 @@ FORBIDDEN_CREDENTIAL_ENV = (
 )
 
 
-def load_snapshot(snapshot_file: pathlib.Path) -> dict[str, Any]:
-    """Load the narrow worker input contract and return its canonical artifact."""
+def load_snapshot_bytes(raw: bytes) -> dict[str, Any]:
+    """Validate one already-read snapshot byte sequence into a canonical artifact."""
     try:
-        value = json.loads(snapshot_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read sanitized snapshot: {exc}") from exc
     if not isinstance(value, dict) or (set(value) != SNAPSHOT_FIELDS and set(value) != SNAPSHOT_CONTEXT_FIELDS):
         raise ValueError("snapshot must contain only the documented sanitized fields")
@@ -44,6 +44,14 @@ def load_snapshot(snapshot_file: pathlib.Path) -> dict[str, Any]:
     if not isinstance(proposal, dict):
         raise ValueError("snapshot proposal must be an object")
     return docs_patch.validate_artifact(proposal)
+
+
+def load_snapshot(snapshot_file: pathlib.Path) -> dict[str, Any]:
+    """Load the narrow worker input contract and return its canonical artifact."""
+    try:
+        return load_snapshot_bytes(snapshot_file.read_bytes())
+    except OSError as exc:
+        raise ValueError(f"could not read sanitized snapshot: {exc}") from exc
 
 
 def write_artifact(artifact_file: pathlib.Path, artifact: dict[str, Any]) -> None:

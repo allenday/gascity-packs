@@ -18,15 +18,19 @@ import github_intake_docs_patch_worker as worker
 QUEUE_ARTIFACT_SCHEMA_VERSION = 1
 
 
-def snapshot_sha256(snapshot_file: pathlib.Path) -> str:
+def snapshot_sha256_bytes(raw: bytes) -> str:
     """Digest exact queue bytes, including protocol version and proposal content."""
-    return hashlib.sha256(snapshot_file.read_bytes()).hexdigest()
+    return hashlib.sha256(raw).hexdigest()
 
 
-def queue_artifact(snapshot_file: pathlib.Path, artifact: dict[str, Any]) -> dict[str, Any]:
+def snapshot_sha256(snapshot_file: pathlib.Path) -> str:
+    return snapshot_sha256_bytes(snapshot_file.read_bytes())
+
+
+def queue_artifact(snapshot_digest: str, artifact: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": QUEUE_ARTIFACT_SCHEMA_VERSION,
-        "snapshot_sha256": snapshot_sha256(snapshot_file),
+        "snapshot_sha256": snapshot_digest,
         "artifact": docs_patch.validate_artifact(artifact),
     }
 
@@ -64,6 +68,19 @@ def write_queue_artifact(artifact_file: pathlib.Path, envelope: dict[str, Any]) 
         raise
 
 
+def consume_snapshot(snapshot_file: pathlib.Path, raw: bytes, artifact_file: pathlib.Path) -> bool:
+    """Process precisely the bytes read by the queue scan, never rereading its path."""
+    digest = snapshot_sha256_bytes(raw)
+    if artifact_is_current(artifact_file, digest):
+        return False
+    try:
+        artifact = worker.load_snapshot_bytes(raw)
+        write_queue_artifact(artifact_file, queue_artifact(digest, artifact))
+        return True
+    except ValueError:
+        return False
+
+
 def consume_once(snapshot_dir: pathlib.Path, artifact_dir: pathlib.Path) -> int:
     """Publish every queued snapshot lacking a valid matching output envelope."""
     worker.reject_credentials()
@@ -71,13 +88,10 @@ def consume_once(snapshot_dir: pathlib.Path, artifact_dir: pathlib.Path) -> int:
     handled = 0
     for snapshot_file in sorted(snapshot_dir.glob("*.json")):
         artifact_file = artifact_dir / snapshot_file.name
-        digest = snapshot_sha256(snapshot_file)
-        if artifact_is_current(artifact_file, digest):
-            continue
         try:
-            write_queue_artifact(artifact_file, queue_artifact(snapshot_file, worker.load_snapshot(snapshot_file)))
-            handled += 1
-        except ValueError:
+            if consume_snapshot(snapshot_file, snapshot_file.read_bytes(), artifact_file):
+                handled += 1
+        except OSError:
             # The trusted supervisor will turn absent/invalid output into its
             # human-friendly required-action result; never emit partial output.
             continue

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
 import sys
 import tempfile
@@ -61,3 +62,22 @@ class DocsPatchQueueWorkerTests(unittest.TestCase):
             self.assertEqual(queue_worker.consume_once(snapshots, artifacts), 1)
             recovered = json.loads((artifacts / snapshot.name).read_text(encoding="utf-8"))
             self.assertEqual(recovered["snapshot_sha256"], queue_worker.snapshot_sha256(snapshot))
+
+    def test_snapshot_replacement_after_read_cannot_mix_digest_and_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            snapshots, artifacts = root / "snapshots", root / "artifacts"
+            snapshots.mkdir()
+            snapshot = snapshots / "revision-bound.json"
+            original = json.dumps({"schema_version": 1, "proposal": proposal()}).encode("utf-8")
+            snapshot.write_bytes(original)
+            captured_bytes = snapshot.read_bytes()
+            replacement = proposal()
+            replacement["claims"][0]["claim"] = "Replacement that must not leak into this result."
+            snapshot.write_text(json.dumps({"schema_version": 1, "proposal": replacement}), encoding="utf-8")
+
+            self.assertTrue(queue_worker.consume_snapshot(snapshot, captured_bytes, artifacts / snapshot.name))
+
+            envelope = json.loads((artifacts / snapshot.name).read_text(encoding="utf-8"))
+            self.assertEqual(envelope["snapshot_sha256"], hashlib.sha256(original).hexdigest())
+            self.assertNotIn("Replacement that must not leak", json.dumps(envelope))
