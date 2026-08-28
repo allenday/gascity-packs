@@ -43,6 +43,8 @@ PROFILE_IDENTITY_ENV_PREFIX = "GITHUB_INTAKE_"
 INTAKE_APP_CONFIG_REQUIRED_FIELDS = ("app_id", "webhook_secret", "private_key_pem")
 DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION = 1
 DOCS_IMPACT_AGENT_SKILL = "developer-experience-techdocs"
+DOCS_IMPACT_ASSIGNMENT_LOCKS_GUARD = threading.Lock()
+DOCS_IMPACT_ASSIGNMENT_LOCKS: dict[str, threading.Lock] = {}
 
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -1022,6 +1024,38 @@ def docs_impact_assignment_path(context: dict[str, str]) -> str:
     return os.path.join(root, f"{storage_id}.json")
 
 
+def docs_impact_assignment_lock(source_key: str) -> threading.Lock:
+    """Return the process-wide lock for one immutable PR source identity."""
+    with DOCS_IMPACT_ASSIGNMENT_LOCKS_GUARD:
+        return DOCS_IMPACT_ASSIGNMENT_LOCKS.setdefault(source_key, threading.Lock())
+
+
+def is_complete_docs_impact_assignment(value: Any, identity: dict[str, Any]) -> bool:
+    """Accept only a canonical descriptor for the source being queued."""
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "kind", "identity", "agent_skill", "changed_paths",
+    }:
+        return False
+    persisted_identity = value["identity"]
+    paths = value["changed_paths"]
+    return (
+        type(value["schema_version"]) is int
+        and value["schema_version"] == DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION
+        and value["kind"] == "github-pr-docs-impact-assignment"
+        and isinstance(persisted_identity, dict)
+        and persisted_identity == identity
+        and all(isinstance(persisted_identity[field], str) for field in (
+            "repository_id", "repository", "head_sha", "source_key",
+        ))
+        and type(persisted_identity["pr_number"]) is int
+        and value["agent_skill"] == DOCS_IMPACT_AGENT_SKILL
+        and isinstance(paths, list)
+        and len(paths) <= 100
+        and all(isinstance(path, str) and path.strip() == path and path for path in paths)
+        and paths == sorted(set(paths))
+    )
+
+
 def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: list[str]) -> dict[str, Any]:
     """Write one sanitized TechDocs assignment for an immutable PR revision."""
     source_key = str(source.get("source_key", "")).strip()
@@ -1046,11 +1080,12 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
         "changed_paths": sorted({str(path).strip() for path in paths if str(path).strip()})[:100],
     }
     assignment_path = docs_impact_assignment_path(context)
-    existing = common.read_json(assignment_path)
-    if isinstance(existing, dict) and existing.get("kind") == assignment["kind"] and existing.get("identity") == assignment["identity"] and existing.get("agent_skill") == DOCS_IMPACT_AGENT_SKILL:
-        return {"status": "duplicate", "assignment": existing, "assignment_path": assignment_path}
-    common.atomic_write_json(assignment_path, assignment)
-    return {"status": "queued", "assignment": assignment, "assignment_path": assignment_path}
+    with docs_impact_assignment_lock(source_key):
+        existing = common.read_json(assignment_path)
+        if is_complete_docs_impact_assignment(existing, assignment["identity"]):
+            return {"status": "duplicate", "assignment": existing, "assignment_path": assignment_path}
+        common.atomic_write_json(assignment_path, assignment)
+        return {"status": "queued", "assignment": assignment, "assignment_path": assignment_path}
 
 
 def save_docs_impact_run(

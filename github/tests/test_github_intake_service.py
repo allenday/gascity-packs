@@ -5,6 +5,7 @@ import json
 import urllib.parse
 import pathlib
 import tempfile
+import threading
 import unittest
 
 import os
@@ -867,6 +868,70 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(created["assignment"]["changed_paths"], ["docs/guide.md", "src/cli.py"])
         self.assertEqual(service.common.read_json(created["assignment_path"]), created["assignment"])
         self.assertNotEqual(created["assignment_path"], next_revision["assignment_path"])
+
+    def test_queue_agent_review_repairs_incomplete_persisted_assignment(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
+        assignment_path = service.docs_impact_assignment_path(context)
+        service.common.atomic_write_json(assignment_path, {
+            "schema_version": True,
+            "kind": "github-pr-docs-impact-assignment",
+            "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+                         "head_sha": "a" * 40, "source_key": source["source_key"]},
+            "agent_skill": "developer-experience-techdocs",
+            "changed_paths": ["src/cli.py"],
+        })
+
+        result = service.queue_agent_review(context, source, ["src/cli.py"])
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["assignment"], {
+            "schema_version": 1,
+            "kind": "github-pr-docs-impact-assignment",
+            "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+                         "head_sha": "a" * 40, "source_key": source["source_key"]},
+            "agent_skill": "developer-experience-techdocs",
+            "changed_paths": ["src/cli.py"],
+        })
+        self.assertEqual(service.common.read_json(assignment_path), result["assignment"])
+
+    def test_queue_agent_review_serializes_concurrent_duplicate_deliveries(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
+        worker_count = 8
+        start = threading.Barrier(worker_count)
+        simultaneous_reads = threading.Barrier(worker_count)
+        read_json = service.common.read_json
+
+        def synchronized_read(*args: object, **kwargs: object) -> object:
+            try:
+                simultaneous_reads.wait(timeout=2)
+            except threading.BrokenBarrierError:
+                pass
+            return read_json(*args, **kwargs)
+
+        def queue() -> dict[str, object]:
+            start.wait(timeout=2)
+            return service.queue_agent_review(context, source, ["src/cli.py"])
+
+        with mock.patch.object(service.common, "read_json", side_effect=synchronized_read):
+            results: list[dict[str, object]] = []
+            result_lock = threading.Lock()
+
+            def collect() -> None:
+                result = queue()
+                with result_lock:
+                    results.append(result)
+
+            threads = [threading.Thread(target=collect) for _ in range(worker_count)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(len(results), worker_count)
+        self.assertEqual(sum(result["status"] == "queued" for result in results), 1)
+        self.assertEqual(sum(result["status"] == "duplicate" for result in results), worker_count - 1)
 
     def test_addressed_route_target_derives_from_github_repo_at_dispatch_time(self) -> None:
         with mock.patch.object(

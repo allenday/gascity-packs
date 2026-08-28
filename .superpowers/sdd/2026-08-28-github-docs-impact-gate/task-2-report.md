@@ -10,6 +10,8 @@ Implemented in commit `feat(github): queue docs impact for city review`.
 - Added `queue_agent_review`, which writes one sanitized descriptor per immutable PR source key to the existing snapshot inbox. The descriptor contains the exact PR identity, source key, changed paths, and the required `developer-experience-techdocs` skill.
 - Duplicate deliveries reuse the existing assignment; a distinct head SHA receives a different assignment path.
 - Added tests for the absent-before-result GitHub boundary and durable assignment identity/reuse behavior.
+- Round 1: persisted assignments must have the complete canonical schema before being reused; incomplete or type-invalid descriptors are atomically repaired.
+- Round 1: per-source locks serialize concurrent duplicate deliveries so exactly one writer queues the assignment and all others reuse it.
 
 ## Verification
 
@@ -18,7 +20,11 @@ Implemented in commit `feat(github): queue docs impact for city review`.
 - `python3 -m unittest github.tests.test_github_intake_docs_impact github.tests.test_github_intake_service github.tests.test_github_intake_docs_impact_pipeline github.tests.test_github_intake_docs_patch_queue_worker -v` — PASS (70 tests).
 - `python3 -m unittest discover -s github/tests -p 'test_*.py' -v` — PASS (150 tests).
 - `git diff --check` — PASS.
+- Round 1 RED: malformed persisted descriptors were accepted as duplicates, and synchronized concurrent deliveries all returned `queued` before the fixes.
+- `python3 -m unittest github.tests.test_github_intake_docs_impact github.tests.test_github_intake_service -v` — PASS (65 tests) after round 1.
+- `python3 -m unittest discover -s github/tests -p 'test_*.py' -v` — PASS (152 tests) after round 1.
+- `git diff --check` — PASS after round 1.
 
 ## Concerns
 
-The legacy patch sidecar remains present for the following task to replace, but this evaluator ignores its candidate artifacts and cannot create or update a GitHub check before a City agent review exists.
+The per-source queue lock is process-local, matching this threaded intake service. The legacy patch sidecar remains present for the following task to replace, but this evaluator ignores its candidate artifacts and cannot create or update a GitHub check before a City agent review exists.
