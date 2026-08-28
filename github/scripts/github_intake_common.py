@@ -461,6 +461,7 @@ def build_manifest() -> dict[str, Any]:
         "description": "Workspace-hosted GitHub comment and event intake for Gas City",
         "public": False,
         "default_permissions": {
+            "checks": "write",
             "contents": "write",
             "issues": "write",
             "pull_requests": "write",
@@ -1218,6 +1219,34 @@ def post_issue_comment(
         "POST",
         f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues/{issue_number}/comments",
         payload={"body": body},
+        bearer_token=token,
+    )
+
+
+def create_check_run(
+    app_cfg: dict[str, Any],
+    installation_id: str,
+    owner: str,
+    repo: str,
+    head_sha: str,
+    name: str,
+    status: str,
+    conclusion: str | None,
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    token = create_installation_token(app_cfg, installation_id)
+    payload: dict[str, Any] = {
+        "name": name,
+        "head_sha": head_sha,
+        "status": status,
+        "output": output,
+    }
+    if conclusion:
+        payload["conclusion"] = conclusion
+    return github_api_request(
+        "POST",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs",
+        payload=payload,
         bearer_token=token,
     )
 

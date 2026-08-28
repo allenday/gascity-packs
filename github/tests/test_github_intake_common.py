@@ -7,6 +7,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import sys
 
@@ -64,6 +65,7 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         self.assertIn("pull_request", manifest["default_events"])
         self.assertEqual(manifest["default_permissions"]["contents"], "write")
         self.assertEqual(manifest["default_permissions"]["pull_requests"], "write")
+        self.assertEqual(manifest["default_permissions"]["checks"], "write")
 
     def test_effective_config_merges_github_app_env_secrets(self) -> None:
         os.environ["GITHUB_APP_ID"] = "123"
@@ -90,6 +92,30 @@ class GitHubIntakeCommonTests(unittest.TestCase):
 
         self.assertEqual(config["app"]["app_id"], "123")
         self.assertEqual(config["app"]["installation_id"], "456")
+
+    @mock.patch.object(common, "github_api_request")
+    @mock.patch.object(common, "create_installation_token", return_value="installation-token")
+    def test_create_check_run_is_bound_to_exact_head_sha(self, create_token: mock.Mock, request: mock.Mock) -> None:
+        request.return_value = {"id": 9, "head_sha": "a" * 40}
+
+        result = common.create_check_run(
+            {"app_id": "7"},
+            "55",
+            "allenday",
+            "repo",
+            "a" * 40,
+            "Gas City / docs-impact",
+            "in_progress",
+            None,
+            {"title": "Evaluating docs impact", "summary": "source bead ga-1"},
+        )
+
+        self.assertEqual(result["id"], 9)
+        create_token.assert_called_once_with({"app_id": "7"}, "55")
+        self.assertEqual(request.call_args.args[:2], ("POST", "/repos/allenday/repo/check-runs"))
+        self.assertEqual(request.call_args.kwargs["payload"]["head_sha"], "a" * 40)
+        self.assertEqual(request.call_args.kwargs["payload"]["status"], "in_progress")
+        self.assertNotIn("conclusion", request.call_args.kwargs["payload"])
 
     def test_load_rules_reads_city_owned_toml_and_flattens_match(self) -> None:
         rules_dir = pathlib.Path(self.tempdir.name) / "config" / "github-intake"
