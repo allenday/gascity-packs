@@ -266,7 +266,9 @@ class DocsImpactPipelineTests(unittest.TestCase):
                 pipeline.docs_impact, "create_source", return_value=source
             ), mock.patch.object(
                 pipeline.service.common, "create_check_run_with_token", return_value={"id": 81}
-            ) as create_check:
+            ) as create_check, mock.patch.object(
+                pipeline.service.common, "update_check_run_with_token", return_value={"id": 81, "conclusion": "success"}
+            ) as update_check:
 
                 def complete_adapter_work(
                     assignment_file: pathlib.Path, artifact_file: pathlib.Path, wait_seconds: float,
@@ -294,7 +296,8 @@ class DocsImpactPipelineTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "published")
             create_check.assert_called_once()
-            self.assertEqual(create_check.call_args.args[5:7], ("completed", "success"))
+            self.assertEqual(create_check.call_args.args[5:7], ("in_progress", None))
+            self.assertEqual(update_check.call_args.args[4:6], ("completed", "success"))
             record = pipeline.service.load_docs_impact_run({
                 "repository_id": "17",
                 "repository": "allenday/demo",

@@ -136,8 +136,31 @@ def test_unavailable_agent_produces_no_artifact(self):
 - [ ] Dogfood three PR revisions: docs-only → `no-impact`/ `docs-sufficient`; code plus adequate docs → `docs-sufficient`; code without adequate docs → `docs-change-required`/ `proposal-ready`. For each, verify absent-before-result, correct final check, and no City ID on the run page.
 - [ ] Commit pack changes as `feat(github): route docs impact through city techdocs` and compose changes as `feat(compose): run city techdocs docs impact adapter`.
 
+### Task 5: Reconcile the final PR-head publication race
+
+**Files:**
+- Modify: `github/scripts/github_intake_docs_impact.py`
+- Modify: `github/scripts/github_intake_service.py`
+- Modify: `github/tests/test_github_intake_docs_impact.py`
+
+**Interfaces:**
+
+```python
+def begin_agent_review_neutralization(context, review, check_run) -> dict[str, Any] | None: ...
+def complete_agent_review_neutralization(context, review, check_run) -> dict[str, Any] | None: ...
+```
+
+- [x] Write failing tests proving a PR head change during Check Run creation causes the completed check to be updated to `action_required`, records no published success, and returns `head_sha_changed`.
+- [x] Write failing tests proving the same post-publication reconciliation applies when an ambiguously accepted Check Run is adopted on retry.
+- [x] Write failing tests proving a post-create PR-head lookup failure neutralizes the check and raises instead of publishing success; a neutralization failure also raises and leaves publication retryable.
+- [x] Run `python3 -m unittest github.tests.test_github_intake_docs_impact -v`; expect failures because publication currently completes before rereading the PR head.
+- [x] Create the check as `in_progress`, then add one post-create/adopt head lookup in the publisher before PATCHing the desired terminal conclusion. On mismatch or inability to verify, durably persist `neutralizing`, update the check to completed `action_required`, then persist terminal `stale` state.
+- [x] Run the focused suite and the full GitHub suite; expect PASS.
+- [x] Commit `fix(github): reconcile final docs check head race`.
+
 ## Plan self-review
 
 - Tasks 1–3 cover artifact provenance, exact revision binding, no-pre-result publishing, terse public output, and private evidence.
 - Task 4 preserves isolation and validates the three requested dogfood outcomes.
+- Task 5 closes the final remote publication TOCTOU and fails closed when either verification or neutralization cannot be confirmed.
 - No deterministic fallback or undeclared artifact handoff remains.

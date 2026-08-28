@@ -1243,6 +1243,44 @@ def complete_agent_review_publication(
     return record
 
 
+def begin_agent_review_neutralization(
+    context: dict[str, str], review: dict[str, Any], check_run: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Durably reserve one check for neutralization before touching it remotely."""
+    record = load_docs_impact_run(context)
+    if not isinstance(record, dict) or record.get("review") != review:
+        return None
+    check_run_id = str(check_run.get("id", "")).strip()
+    if not check_run_id:
+        return None
+    if record.get("publication_state") == "neutralizing":
+        return record if record.get("check_run_id") == check_run_id else None
+    if record.get("publication_state") != "started":
+        return None
+    record["check_run_id"] = check_run_id
+    record["publication_state"] = "neutralizing"
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
+def complete_agent_review_neutralization(
+    context: dict[str, str], review: dict[str, Any], check_run: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Make a successfully neutralized check terminal in local publication state."""
+    record = load_docs_impact_run(context)
+    check_run_id = str(check_run.get("id", "")).strip()
+    if (
+        not isinstance(record, dict)
+        or record.get("review") != review
+        or record.get("publication_state") != "neutralizing"
+        or record.get("check_run_id") != check_run_id
+    ):
+        return None
+    record["publication_state"] = "stale"
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
 def load_docs_impact_run(context: dict[str, str]) -> dict[str, Any] | None:
     record = common.read_json(docs_impact_run_path(context))
     if not isinstance(record, dict):
