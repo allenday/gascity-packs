@@ -1391,6 +1391,33 @@ def render_template(value: str, payload: dict[str, Any]) -> str:
     return out
 
 
+def github_pr_context(payload: dict[str, Any]) -> dict[str, str]:
+    repository = payload.get("repository") or {}
+    owner = repository.get("owner") or {}
+    pull_request = payload.get("pull_request") or {}
+    head = pull_request.get("head") or {}
+    base = pull_request.get("base") or {}
+    values = {
+        "repository_id": str(repository.get("id", "")).strip(),
+        "repository": str(repository.get("full_name", "")).strip().lower(),
+        "owner": str(owner.get("login", "")).strip(),
+        "repo": str(repository.get("name", "")).strip(),
+        "number": str(pull_request.get("number", "")).strip(),
+        "head_sha": str(head.get("sha", "")).strip(),
+        "head_ref": str(head.get("ref", "")).strip(),
+        "base_ref": str(base.get("ref", "")).strip(),
+        "url": str(pull_request.get("html_url", "")).strip(),
+    }
+    required = ("repository_id", "repository", "number", "head_sha")
+    if any(not values[key] for key in required):
+        raise ValueError("pull_request payload is missing immutable source identity")
+    return values
+
+
+def github_pr_source_key(context: dict[str, str]) -> str:
+    return "github-pr:{repository_id}:{number}:{head_sha}".format(**context)
+
+
 def github_event_env(event: str, delivery_id: str, payload: dict[str, Any], payload_file: str) -> dict[str, str]:
     repository = payload.get("repository") or {}
     owner = repository.get("owner") or {}
@@ -1413,6 +1440,7 @@ def github_event_env(event: str, delivery_id: str, payload: dict[str, Any], payl
         "GC_GITHUB_PR_NUMBER": str(pull_request.get("number", "")),
         "GC_GITHUB_PR_URL": str(pull_request.get("html_url", "")),
         "GC_GITHUB_PR_STATE": str(pull_request.get("state", "")),
+        "GC_GITHUB_PR_HEAD_SHA": str((pull_request.get("head") or {}).get("sha", "")),
         "GC_GITHUB_ISSUE_NUMBER": str(issue.get("number", "")),
         "GC_GITHUB_ISSUE_URL": str(issue.get("html_url", "")),
         "GC_GITHUB_ISSUE_STATE": str(issue.get("state", "")),

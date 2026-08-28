@@ -88,6 +88,8 @@ class GitHubIntakeServiceTests(unittest.TestCase):
                 "number": 42,
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
+                "base": {"ref": "main"},
+                "head": {"ref": "docs-impact", "sha": "a" * 40},
             },
             "sender": {"login": "alice"},
         }
@@ -98,10 +100,37 @@ class GitHubIntakeServiceTests(unittest.TestCase):
         self.assertEqual(env["GC_GITHUB_REPO"], "owner/repo")
         self.assertEqual(env["GC_GITHUB_PR_NUMBER"], "42")
         self.assertEqual(env["GC_GITHUB_PR_URL"], "https://github.com/owner/repo/pull/42")
+        self.assertEqual(env["GC_GITHUB_PR_HEAD_SHA"], "a" * 40)
         self.assertEqual(env["GC_GITHUB_LABEL_NAME"], "status/needs-review")
         self.assertEqual(env["GC_GITHUB_ITEM_KIND"], "pr")
         self.assertEqual(env["GC_GITHUB_ITEM_NUMBER"], "42")
         self.assertEqual(env["GC_GITHUB_EVENT_PAYLOAD_FILE"], "/tmp/payload.json")
+
+    def test_github_pr_source_key_is_bound_to_immutable_head(self) -> None:
+        payload = {
+            "repository": {
+                "id": 123,
+                "full_name": "Owner/Repo",
+                "owner": {"login": "Owner"},
+                "name": "Repo",
+            },
+            "pull_request": {
+                "number": 42,
+                "html_url": "https://github.com/owner/repo/pull/42",
+                "state": "open",
+                "base": {"ref": "main"},
+                "head": {"ref": "docs-impact", "sha": "a" * 40},
+            },
+        }
+
+        context = service.github_pr_context(payload)
+
+        self.assertEqual(context["repository_id"], "123")
+        self.assertEqual(context["head_sha"], "a" * 40)
+        self.assertEqual(
+            service.github_pr_source_key(context),
+            "github-pr:123:42:" + "a" * 40,
+        )
 
     def test_github_event_env_includes_issue_context(self) -> None:
         payload = {
