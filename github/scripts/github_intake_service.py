@@ -990,10 +990,10 @@ def create_pull_request_source(request: dict[str, Any]) -> dict[str, Any]:
     return {"status": "created", "bead_id": created_id, "source_key": source_key}
 
 
-def github_pr_docs_patch_key(context: dict[str, str], artifact_sha256: str) -> str:
+def github_pr_docs_patch_key(context: dict[str, str], patch_sha256: str) -> str:
     """Return the immutable identity for one patch proposed against one PR head."""
-    return "github-pr-docs-patch:{repository_id}:{number}:{head_sha}:{artifact_sha256}".format(
-        artifact_sha256=artifact_sha256,
+    return "github-pr-docs-patch:{repository_id}:{number}:{head_sha}:{patch_sha256}".format(
+        patch_sha256=patch_sha256,
         **context,
     )
 
@@ -1007,12 +1007,12 @@ def create_pull_request_docs_patch_result(
     context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any]
 ) -> dict[str, Any]:
     """Persist and create an immutable derived bead without modifying its source."""
+    patch_sha256 = str(artifact.get("patch_sha256", "")).strip()
     artifact_sha256 = str(artifact.get("artifact_sha256", "")).strip()
-    if not artifact_sha256:
+    if not patch_sha256 or not artifact_sha256:
         return {"status": "failed", "reason": "artifact_digest_missing"}
-    source_key = github_pr_docs_patch_key(context, artifact_sha256)
+    source_key = github_pr_docs_patch_key(context, patch_sha256)
     artifact_path = docs_patch_artifact_path(source_key)
-    common.atomic_write_json(artifact_path, artifact)
     try:
         existing = addressed_sources_by_key(source_key)
     except FileNotFoundError:
@@ -1023,11 +1023,14 @@ def create_pull_request_docs_patch_result(
     result = {
         "bead_id": bead_id(existing[0]) if existing else "",
         "source_key": source_key,
+        "patch_sha256": patch_sha256,
         "artifact_sha256": artifact_sha256,
         "artifact_path": artifact_path,
     }
     if existing:
         return {"status": "duplicate", "reason": "source_key_exists", **result}
+
+    common.atomic_write_json(artifact_path, artifact)
 
     source_bead_id = str(source.get("bead_id") or source.get("id") or "").strip()
     metadata = {
@@ -1039,7 +1042,7 @@ def create_pull_request_docs_patch_result(
         "github.pr_number": context["number"],
         "github.head_sha": context["head_sha"],
         "docs_patch.artifact_sha256": artifact_sha256,
-        "docs_patch.patch_sha256": str(artifact.get("patch_sha256", "")),
+        "docs_patch.patch_sha256": patch_sha256,
         "docs_patch.status": str(artifact.get("status", "")),
         "docs_patch.artifact_path": artifact_path,
         "docs_patch.source_bead_id": source_bead_id,
@@ -1050,7 +1053,8 @@ def create_pull_request_docs_patch_result(
         f"- Source bead: {source_bead_id}",
         f"- Source key: {github_pr_source_key(context)}",
         f"- Head SHA: {context['head_sha']}",
-        f"- Artifact digest: {artifact_sha256}",
+        f"- Patch digest: {patch_sha256}",
+        f"- Artifact integrity digest: {artifact_sha256}",
         "",
         "This is immutable derived documentation-patch evidence; it does not modify the source bead or pull request branch.",
     ])

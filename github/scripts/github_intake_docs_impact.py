@@ -64,7 +64,7 @@ def check_output(title: str, summary: str, context: dict[str, str], source: dict
 
 
 def patch_check_output(
-    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any] | None, outcome: str
+    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any] | None, outcome: str, reason: str = ""
 ) -> dict[str, str]:
     """Render an actionable, bounded public projection of validated artifact data."""
     bead_id = str(source.get("bead_id", "unavailable"))
@@ -87,9 +87,18 @@ def patch_check_output(
         if len(encoded) > MAX_CHECK_DIFF_BYTES:
             diff = encoded[:MAX_CHECK_DIFF_BYTES].decode("utf-8", errors="ignore").rstrip() + "\n…"
         return {"title": "Documentation update proposed", "summary": "\n".join(summary), "text": f"```diff\n{diff}\n```"}
+    safe_reasons = {
+        "artifact_unavailable": "No documentation patch artifact was supplied.",
+        "artifact_invalid": "The documentation patch artifact failed validation.",
+        "artifact_identity_mismatch": "The proposal is bound to a different pull request revision.",
+        "artifact_persistence_failed": "The validated documentation patch artifact could not be persisted.",
+        "unavailable": "The documentation proposal is unavailable.",
+        "unsafe": "The documentation proposal was marked unsafe.",
+    }
     summary.extend([
         "",
-        "The documentation proposal was unavailable or unsafe. Human review is required; no patch text is published.",
+        safe_reasons.get(reason, "The documentation proposal was unavailable or unsafe."),
+        "Human review is required; no patch text is published.",
     ])
     return {"title": "Documentation proposal unavailable", "summary": "\n".join(summary)}
 
@@ -160,7 +169,7 @@ def evaluate(payload: dict[str, Any], delivery_id: str, token: str, artifact: di
     projection = project_docs_patch(context, source, artifact)
     completed = common.update_check_run_with_token(
         token, context["owner"], context["repo"], check_id, "completed", "action_required",
-        patch_check_output(context, source, projection["artifact"], projection["outcome"]),
+        patch_check_output(context, source, projection["artifact"], projection["outcome"], projection["reason"]),
     )
     return {"outcome": projection["outcome"], "reason": projection["reason"], "source": source,
             "result": projection["result"], "check_run": completed, "head_sha": context["head_sha"]}

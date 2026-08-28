@@ -54,8 +54,24 @@ class DocsImpactTests(unittest.TestCase):
 
             self.assertEqual(created["status"], "created")
             self.assertEqual(duplicate, {**created, "status": "duplicate", "reason": "source_key_exists"})
-            self.assertEqual(service.github_pr_docs_patch_key(context, created["artifact_sha256"]), created["source_key"])
+            self.assertEqual(service.github_pr_docs_patch_key(context, created["patch_sha256"]), created["source_key"])
             self.assertEqual(service.common.read_json(created["artifact_path"])["artifact_sha256"], created["artifact_sha256"])
+
+    def test_regenerated_patch_with_a_new_timestamp_reuses_derived_result_identity(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        first = docs_impact.docs_patch.validate_artifact(proposal())
+        regenerated = proposal()
+        regenerated["generated_at"] = "2026-08-28T13:00:00Z"
+        second = docs_impact.docs_patch.validate_artifact(regenerated)
+        self.assertNotEqual(first["artifact_sha256"], second["artifact_sha256"])
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
+            service, "addressed_sources_by_key", side_effect=[[], [{"id": "ga-result"}]]
+        ), mock.patch.object(service, "run_subprocess", return_value=mock.Mock(returncode=0, stdout='{"id":"ga-result"}', stderr="")):
+            created = service.create_pull_request_docs_patch_result(context, {"bead_id": "ga-source"}, first)
+            duplicate = service.create_pull_request_docs_patch_result(context, {"bead_id": "ga-source"}, second)
+
+        self.assertEqual(created["source_key"], duplicate["source_key"])
+        self.assertEqual(created["source_key"], service.github_pr_docs_patch_key(context, first["patch_sha256"]))
 
     def test_projection_rejects_artifact_for_an_older_source_sha(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "b" * 40}
@@ -85,6 +101,23 @@ class DocsImpactTests(unittest.TestCase):
         self.assertEqual(result["reason"], "artifact_unavailable")
         self.assertEqual(output["title"], "Documentation proposal unavailable")
         self.assertNotIn("```diff", output.get("text", ""))
+
+    def test_unavailable_and_unsafe_output_include_safe_specific_reasons(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        unavailable = docs_impact.project_docs_patch(context, {"bead_id": "ga-source"}, None)
+        with mock.patch.object(service, "create_pull_request_docs_patch_result", return_value={"status": "created", "bead_id": "ga-result"}):
+            unsafe = docs_impact.project_docs_patch(context, {"bead_id": "ga-source"}, proposal(status="unsafe"))
+
+        unavailable_output = docs_impact.patch_check_output(
+            context, {"bead_id": "ga-source"}, None, unavailable["outcome"], unavailable["reason"]
+        )
+        unsafe_output = docs_impact.patch_check_output(
+            context, {"bead_id": "ga-source"}, unsafe["artifact"], unsafe["outcome"], unsafe["reason"]
+        )
+        self.assertIn("No documentation patch artifact was supplied.", unavailable_output["summary"])
+        self.assertIn("The documentation proposal was marked unsafe.", unsafe_output["summary"])
+        self.assertNotIn("```diff", unavailable_output.get("text", ""))
+        self.assertNotIn("```diff", unsafe_output.get("text", ""))
 
     def test_webhook_payload_unwraps_durable_delivery_envelope(self) -> None:
         payload = {"number": 9, "pull_request": {"head": {"sha": "a" * 40}}}
