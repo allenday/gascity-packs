@@ -1263,6 +1263,7 @@ def create_check_run_with_token(
     conclusion: str | None,
     output: dict[str, Any],
     details_url: str = "",
+    external_id: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
@@ -1276,12 +1277,30 @@ def create_check_run_with_token(
         payload["details_url"] = admin_dashboard_url()
     if conclusion:
         payload["conclusion"] = conclusion
+    if external_id:
+        payload["external_id"] = external_id
     return github_api_request(
         "POST",
         f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs",
         payload=payload,
         bearer_token=token,
     )
+
+
+def find_check_run_by_external_id_with_token(
+    token: str, owner: str, repo: str, head_sha: str, external_id: str,
+) -> dict[str, Any] | None:
+    """Find one Check Run by its immutable SHA and opaque external ID."""
+    response = github_api_request(
+        "GET",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(head_sha)}/check-runs?per_page=100",
+        bearer_token=token,
+    )
+    check_runs = response.get("check_runs", []) if isinstance(response, dict) else []
+    for check_run in check_runs:
+        if isinstance(check_run, dict) and check_run.get("external_id") == external_id:
+            return check_run
+    return None
 
 
 def update_check_run_with_token(

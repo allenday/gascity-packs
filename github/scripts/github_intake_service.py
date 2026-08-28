@@ -49,6 +49,7 @@ DOCS_IMPACT_AGENT_SKILL = "developer-experience-techdocs"
 DOCS_IMPACT_ASSIGNMENT_LOCK_TIMEOUT_SECONDS = 5.0
 DOCS_IMPACT_ASSIGNMENT_LOCK_RETRY_SECONDS = 0.01
 PRIVATE_HYPHENATED_TOKEN_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9-]*\b")
+PUBLIC_TEXT_SHA_PATTERN = re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -1022,6 +1023,13 @@ def docs_impact_run_locator(context: dict[str, str]) -> str:
     return common.safe_storage_id(github_pr_source_key(context), "docs-impact-run")
 
 
+def docs_impact_check_external_id(run_locator: str) -> str:
+    """Return the stable opaque GitHub idempotency identity for one run."""
+    if re.fullmatch(r"docs-impact-run-[0-9a-f]{24}", run_locator) is None:
+        return ""
+    return f"docs-impact:{run_locator}"
+
+
 def docs_impact_assignment_path(context: dict[str, str]) -> str:
     """Return the revision-bound path in the existing sanitized worker inbox."""
     root = os.environ.get(
@@ -1167,6 +1175,7 @@ def _public_docs_impact_text(value: Any, private_identity: dict[str, Any]) -> st
     )
     for private_value in private_values:
         text = text.replace(private_value, "[redacted]")
+    text = PUBLIC_TEXT_SHA_PATTERN.sub("[redacted]", text)
     return PRIVATE_HYPHENATED_TOKEN_PATTERN.sub("[internal review]", text)
 
 

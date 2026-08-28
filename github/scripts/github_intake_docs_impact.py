@@ -68,17 +68,27 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
             return {"status": "ignored", "reason": "review_not_projected"}
         if str(record.get("check_run_id", "")).strip():
             return {"status": "duplicate", "check_run_id": str(record["check_run_id"])}
-        if record.get("publication_state") != "ready":
-            return {"status": "publication_pending"}
         try:
             owner, repository = context["repository"].split("/", 1)
         except (KeyError, ValueError):
             return {"status": "ignored", "reason": "repository_invalid"}
-        record = service.begin_agent_review_publication(context, validated)
-        if not isinstance(record, dict):
-            return {"status": "ignored", "reason": "review_not_projected"}
-        if record.get("publication_state") != "started":
+        reconcile_remote = record.get("publication_state") == "started"
+        if record.get("publication_state") == "ready":
+            record = service.begin_agent_review_publication(context, validated)
+        if not isinstance(record, dict) or record.get("publication_state") != "started":
             return {"status": "publication_pending"}
+        external_id = service.docs_impact_check_external_id(str(record.get("run_locator", "")))
+        if not external_id:
+            return {"status": "publication_pending"}
+        if reconcile_remote:
+            remote_check = service.common.find_check_run_by_external_id_with_token(
+                token, owner, repository, context["head_sha"], external_id,
+            )
+            if remote_check is not None:
+                saved = service.complete_agent_review_publication(context, validated, remote_check)
+                if saved is None:
+                    return {"status": "publication_pending"}
+                return {"status": "adopted", "check_run": remote_check, "record": saved}
         public = record.get("public") if isinstance(record.get("public"), dict) else {}
         verdict = str(public.get("decision", ""))
         check_run = service.common.create_check_run_with_token(
@@ -94,6 +104,7 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
                 "summary": f"{public.get('why', '')}\n\nNext action: {public.get('next_action', '')}",
             },
             service.common.docs_impact_run_url(str(record.get("run_locator", ""))),
+            external_id=external_id,
         )
         saved = service.complete_agent_review_publication(context, validated, check_run)
         if saved is None:

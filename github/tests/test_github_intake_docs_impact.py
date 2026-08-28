@@ -217,7 +217,7 @@ class DocsImpactTests(unittest.TestCase):
 
         create_check.assert_called_once()
 
-    def test_retry_after_publication_failure_never_posts_a_second_check(self) -> None:
+    def test_retry_after_pre_acceptance_failure_creates_one_check(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
         source = {"source_key": "github-pr:17:9:" + "a" * 40}
         review = valid_agent_review()
@@ -225,14 +225,44 @@ class DocsImpactTests(unittest.TestCase):
             "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
         ), mock.patch.object(
             service.common, "create_check_run_with_token", side_effect=[RuntimeError("connection lost"), {"id": 81}]
-        ) as create_check:
+        ) as create_check, mock.patch.object(
+            service.common, "find_check_run_by_external_id_with_token", return_value=None
+        ) as find_check:
             self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
             with self.assertRaisesRegex(RuntimeError, "connection lost"):
                 docs_impact.publish_agent_review("token", context, review)
             retry = docs_impact.publish_agent_review("token", context, review)
 
-        self.assertEqual(retry["status"], "publication_pending")
+        self.assertEqual(retry["status"], "published")
+        self.assertEqual(create_check.call_count, 2)
+        self.assertEqual(
+            create_check.call_args.kwargs["external_id"],
+            service.docs_impact_check_external_id(service.docs_impact_run_locator(context)),
+        )
+        find_check.assert_called_once()
+
+    def test_retry_after_ambiguous_acceptance_adopts_the_remote_check(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        source = {"source_key": "github-pr:17:9:" + "a" * 40}
+        review = valid_agent_review()
+        external_id = service.docs_impact_check_external_id(service.docs_impact_run_locator(context))
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
+            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
+        ), mock.patch.object(
+            service.common, "create_check_run_with_token", side_effect=RuntimeError("response lost")
+        ) as create_check, mock.patch.object(
+            service.common, "find_check_run_by_external_id_with_token",
+            return_value={"id": 81, "external_id": external_id},
+        ) as find_check:
+            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
+            with self.assertRaisesRegex(RuntimeError, "response lost"):
+                docs_impact.publish_agent_review("token", context, review)
+            retry = docs_impact.publish_agent_review("token", context, review)
+
+        self.assertEqual(retry["status"], "adopted")
         create_check.assert_called_once()
+        find_check.assert_called_once_with("token", "allenday", "demo", "a" * 40, external_id)
+        self.assertEqual(service.load_docs_impact_run(context)["check_run_id"], "81")
 
     def test_check_summary_and_link_hide_the_review_identity(self) -> None:
         head_sha = "a" * 40
@@ -272,8 +302,10 @@ class DocsImpactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
             "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
         ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=lambda *args: (time.sleep(0.05) or {"id": 81})
-        ) as create_check:
+            service.common, "create_check_run_with_token", side_effect=lambda *args, **kwargs: (time.sleep(0.05) or {"id": 81})
+        ) as create_check, mock.patch.object(
+            service.common, "find_check_run_by_external_id_with_token", return_value=None
+        ):
             docs_impact.project_agent_review(context, source, review)
             threads = [threading.Thread(target=publish), threading.Thread(target=publish)]
             for thread in threads:

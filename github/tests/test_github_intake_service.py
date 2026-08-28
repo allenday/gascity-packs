@@ -1928,13 +1928,15 @@ class DocsImpactRunPageTests(unittest.TestCase):
     def test_run_page_hides_city_identifier_and_collapses_evidence(self) -> None:
         head_sha = "a" * 40
         source_key = "github-pr:17:9:" + head_sha
+        upper_sha = head_sha.upper()
+        unrelated_sha = "b" * 40
         context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": head_sha}
         record = service.save_agent_review_run(context, {
             "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": 9, "head_sha": head_sha, "source_key": source_key},
             "verdict": "proposal-ready",
-            "rationale": f"City record mc-private cites {source_key} and {head_sha}.",
-            "evidence": [{"path": "docs/guide.md", "evidence": "github://allenday/demo/blob/" + head_sha + "/" + source_key}],
-            "proposal": {"diff": "diff --git a/docs/guide.md b/docs/guide.md\n+" + source_key + "\n" + head_sha + "\n"},
+            "rationale": f"City record mc-private cites {source_key}, {upper_sha}, and {unrelated_sha}.",
+            "evidence": [{"path": "docs/" + unrelated_sha + ".md", "evidence": "github://allenday/demo/blob/" + head_sha + "/" + source_key}],
+            "proposal": {"diff": "diff --git a/docs/guide.md b/docs/guide.md\n+" + source_key + "\n" + upper_sha + "\n" + unrelated_sha + "\n"},
         })
 
         page = service.render_docs_impact_run(record)
@@ -1946,6 +1948,8 @@ class DocsImpactRunPageTests(unittest.TestCase):
         self.assertNotIn("mc-", page)
         self.assertNotIn(source_key, page)
         self.assertNotIn(head_sha, page)
+        self.assertNotIn(upper_sha, page)
+        self.assertNotIn(unrelated_sha, page)
         self.assertNotIn("repository_id", page)
         self.assertNotIn("github://", page)
 
