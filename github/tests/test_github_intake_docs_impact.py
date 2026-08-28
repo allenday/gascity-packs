@@ -11,6 +11,10 @@ import github_intake_docs_impact as docs_impact
 
 
 class DocsImpactTests(unittest.TestCase):
+    def test_webhook_payload_unwraps_durable_delivery_envelope(self) -> None:
+        payload = {"number": 9, "pull_request": {"head": {"sha": "a" * 40}}}
+        self.assertEqual(docs_impact.webhook_payload({"event": "pull_request", "payload": payload}), payload)
+
     def test_classify_paths_is_conservative_for_product_change_without_docs(self) -> None:
         self.assertEqual(
             docs_impact.classify_paths(["github/scripts/github_intake_common.py", "github/tests/test_common.py"])[0],

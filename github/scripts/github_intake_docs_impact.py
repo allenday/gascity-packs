@@ -77,6 +77,14 @@ def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, 
     return service.create_pull_request_source(request)
 
 
+def webhook_payload(document: dict[str, Any]) -> dict[str, Any]:
+    """Accept either a direct webhook payload or the durable intake envelope."""
+    nested = document.get("payload")
+    if isinstance(nested, dict):
+        return nested
+    return document
+
+
 def evaluate(payload: dict[str, Any], delivery_id: str, token: str) -> dict[str, Any]:
     context = service.github_pr_context(payload)
     source = create_source(payload, delivery_id, context)
@@ -114,7 +122,7 @@ def main() -> int:
     if not token:
         parser.error(f"{args.token_env} is required")
     with open(args.payload_file, encoding="utf-8") as handle:
-        payload = json.load(handle)
+        payload = webhook_payload(json.load(handle))
     result = evaluate(payload, args.delivery_id, token)
     print(json.dumps(result, sort_keys=True))
     return 0
