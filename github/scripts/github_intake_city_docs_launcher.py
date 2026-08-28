@@ -218,7 +218,7 @@ def main() -> int:
     parser.add_argument("--state-dir", default=os.environ.get("GC_CITY_DOCS_DISPATCH_DIR", "/var/lib/github-docs-impact/dispatch"))
     parser.add_argument("--skill-dir", default=os.environ.get("GC_CITY_DOCS_SKILL_DIR", "/opt/gascity-packs/github/skills/developer-experience-techdocs"))
     parser.add_argument("--city", default=os.environ.get("CITY_PATH", ""))
-    parser.add_argument("--target", default=os.environ.get("GC_CITY_DOCS_REVIEW_TARGET", "github.docs-impact-reviewer"))
+    parser.add_argument("--target", default=os.environ.get("GC_CITY_DOCS_REVIEW_TARGET", "github-docs-impact.docs-impact-reviewer"))
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()

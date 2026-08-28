@@ -41,7 +41,7 @@ class CityDocsLauncherTests(unittest.TestCase):
                     candidates,
                     state,
                     city_path="/city",
-                    target="github.docs-impact-reviewer",
+                    target="github-docs-impact.docs-impact-reviewer",
                     run=run,
                 ),
                 1,
@@ -55,7 +55,7 @@ class CityDocsLauncherTests(unittest.TestCase):
             self.assertEqual(
                 commands[1],
                 [
-                    "gc", "--city", "/city", "sling", "github.docs-impact-reviewer",
+                    "gc", "--city", "/city", "sling", "github-docs-impact.docs-impact-reviewer",
                     "gc-review-1", "--no-convoy", "--no-formula", "--nudge", "--json",
                 ],
             )
@@ -104,7 +104,7 @@ class CityDocsLauncherTests(unittest.TestCase):
                     candidates,
                     state,
                     city_path="/city",
-                    target="github.docs-impact-reviewer",
+                    target="github-docs-impact.docs-impact-reviewer",
                     run=unexpected,
                 ),
                 0,
@@ -127,7 +127,7 @@ class CityDocsLauncherTests(unittest.TestCase):
                     root / "candidates",
                     root / "state",
                     city_path="/city",
-                    target="github.docs-impact-reviewer",
+                    target="github-docs-impact.docs-impact-reviewer",
                     run=unexpected,
                 ),
                 0,
