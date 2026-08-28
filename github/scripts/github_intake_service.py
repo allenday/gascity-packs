@@ -922,6 +922,56 @@ def create_addressed_source(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def create_pull_request_source(request: dict[str, Any]) -> dict[str, Any]:
+    """Create durable, non-dispatchable source work for one PR revision."""
+    source_key = str(request.get("source_key", "")).strip()
+    if not source_key:
+        return {"status": "failed", "reason": "source_key_missing"}
+    try:
+        existing = addressed_sources_by_key(source_key)
+    except FileNotFoundError:
+        return {"status": "failed", "reason": "bd_not_available"}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "reason": "source_lookup_failed", "detail": trim_output(str(exc))}
+    if existing:
+        return {"status": "duplicate", "reason": "source_key_exists", "bead_id": bead_id(existing[0]), "source_key": source_key}
+
+    title = f"GitHub PR docs impact {request.get('repository_full_name', '')}#{request.get('pr_number', '')}"[:180]
+    metadata = {
+        "external.provider": "github", "external.kind": "pull-request-docs-impact", "external.source_key": source_key,
+        "github.repository": str(request.get("repository_full_name", "")), "github.repository_id": str(request.get("repository_id", "")),
+        "github.pr_number": str(request.get("pr_number", "")), "github.head_sha": str(request.get("head_sha", "")),
+        "github.pr_url": str(request.get("pr_url", "")), "github.installation_id": str(request.get("installation_id", "")),
+        "intake.delivery_id": str(request.get("delivery_id", "")), "raw_payload.path": str(request.get("raw_payload_path", "")),
+        "docs_impact.status": "source_created", "docs_impact.created_at": common.utcnow(),
+    }
+    metadata = {key: value for key, value in metadata.items() if value}
+    description = "\n".join([
+        "## GitHub Pull Request Docs Impact", "", f"- Pull request: {request.get('pr_url', '')}",
+        f"- Source key: {source_key}", f"- Head SHA: {request.get('head_sha', '')}", "",
+        "This is immutable source evidence for a revision-bound merge check.",
+    ])
+    city_root = common.city_root() or "."
+    command = gc_bd_command(
+        city_root, "create", "--json", title, "-t", "task", "--description", description,
+        "--labels", "github-intake,pull-request,docs-impact", "--external-ref", source_key,
+        "--metadata", json.dumps(metadata, sort_keys=True),
+    )
+    try:
+        result = run_subprocess(command, city_root)
+    except FileNotFoundError:
+        return {"status": "failed", "reason": "bd_not_available"}
+    if result.returncode != 0:
+        return {"status": "failed", "reason": "source_create_failed", "source_key": source_key,
+                "stdout": trim_output(result.stdout), "stderr": trim_output(result.stderr)}
+    created = extract_json_output(result.stdout)
+    created_id = str(created.get("id", "")).strip()
+    if not created_id:
+        return {"status": "failed", "reason": "source_create_invalid_json", "source_key": source_key,
+                "stdout": trim_output(result.stdout), "stderr": trim_output(result.stderr)}
+    return {"status": "created", "bead_id": created_id, "source_key": source_key}
+
+
 def comment_from_bot(payload: dict[str, Any], app_cfg: dict[str, Any]) -> bool:
     comment = payload.get("comment") or {}
     user = comment.get("user") or {}

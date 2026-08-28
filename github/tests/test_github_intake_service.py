@@ -820,6 +820,28 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(metadata["addressed.github_app_installation_id"], "profile-installation")
         self.assertEqual(metadata["addressed.ack_requested"], "false")
 
+    def test_create_pull_request_source_is_not_an_addressed_message(self) -> None:
+        list_result = mock.Mock(returncode=0, stdout="[]", stderr="")
+        create_result = mock.Mock(returncode=0, stdout='{"id":"ga-pr-source"}', stderr="")
+        with mock.patch.object(service, "run_subprocess", side_effect=[list_result, create_result]) as run_subprocess:
+            outcome = service.create_pull_request_source(
+                {
+                    "source_key": "github-pr:17:9:" + "a" * 40,
+                    "repository_full_name": "allenday/demo",
+                    "repository_id": "17",
+                    "pr_number": "9",
+                    "head_sha": "a" * 40,
+                    "pr_url": "https://github.com/allenday/demo/pull/9",
+                }
+            )
+
+        self.assertEqual(outcome["status"], "created")
+        command = run_subprocess.call_args_list[1].args[0]
+        self.assertIn("github-intake,pull-request,docs-impact", command)
+        metadata = json.loads(command[command.index("--metadata") + 1])
+        self.assertEqual(metadata["external.kind"], "pull-request-docs-impact")
+        self.assertEqual(metadata["github.head_sha"], "a" * 40)
+
     def test_addressed_route_target_derives_from_github_repo_at_dispatch_time(self) -> None:
         with mock.patch.object(
             service.common,

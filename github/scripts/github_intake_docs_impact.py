@@ -67,16 +67,14 @@ def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, 
         "source_key": source_key,
         "repository_full_name": context["repository"],
         "repository_id": context["repository_id"],
-        "item_kind": "pull-request",
-        "item_number": context["number"],
-        "item_url": context["url"],
+        "pr_number": context["number"],
+        "pr_url": context["url"],
+        "head_sha": context["head_sha"],
         "installation_id": str((payload.get("installation") or {}).get("id", "")),
         "delivery_id": delivery_id,
         "raw_payload_path": os.environ.get("GC_GITHUB_EVENT_PAYLOAD_FILE", ""),
-        "address": "docs-impact",
-        "cleaned_body": "Evaluate this immutable pull-request revision for documentation impact.",
     }
-    return service.create_addressed_source(request)
+    return service.create_pull_request_source(request)
 
 
 def evaluate(payload: dict[str, Any], delivery_id: str, token: str) -> dict[str, Any]:
