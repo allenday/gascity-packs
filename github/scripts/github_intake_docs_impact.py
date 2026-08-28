@@ -11,12 +11,14 @@ import sys
 from typing import Any
 
 import github_intake_common as common
+import github_intake_docs_patch as docs_patch
 import github_intake_service as service
 
 CHECK_NAME = "Gas City / docs-impact"
 DOCS_PREFIXES = ("docs/", "doc/", "documentation/")
 NON_PRODUCT_PREFIXES = (".github/", "test/", "tests/", "fixtures/", "scripts/")
 DOCS_FILENAMES = {"readme.md", "changelog.md", "contributing.md"}
+MAX_CHECK_DIFF_BYTES = 60 * 1024
 
 
 def classify_paths(paths: list[str]) -> tuple[str, str]:
@@ -61,6 +63,64 @@ def check_output(title: str, summary: str, context: dict[str, str], source: dict
     }
 
 
+def patch_check_output(
+    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any] | None, outcome: str
+) -> dict[str, str]:
+    """Render an actionable, bounded public projection of validated artifact data."""
+    bead_id = str(source.get("bead_id", "unavailable"))
+    summary = [
+        "Gas City requires human review before this pull request can use documentation evidence.",
+        "",
+        f"Source bead: `{bead_id}`",
+        f"Source key: `{service.github_pr_source_key(context)}`",
+        f"Code SHA: `{context['head_sha']}`",
+    ]
+    if outcome == "proposed" and artifact is not None:
+        digest = str(artifact["artifact_sha256"])
+        summary.extend([
+            f"Artifact digest: `{digest}`",
+            "",
+            "Apply this documentation patch through the approved review workflow; this check does not write a branch or open a pull request.",
+        ])
+        diff = str(artifact["diff"])
+        encoded = diff.encode("utf-8")
+        if len(encoded) > MAX_CHECK_DIFF_BYTES:
+            diff = encoded[:MAX_CHECK_DIFF_BYTES].decode("utf-8", errors="ignore").rstrip() + "\n…"
+        return {"title": "Documentation update proposed", "summary": "\n".join(summary), "text": f"```diff\n{diff}\n```"}
+    summary.extend([
+        "",
+        "The documentation proposal was unavailable or unsafe. Human review is required; no patch text is published.",
+    ])
+    return {"title": "Documentation proposal unavailable", "summary": "\n".join(summary)}
+
+
+def artifact_matches_context(artifact: dict[str, Any], context: dict[str, str]) -> bool:
+    identity = artifact["identity"]
+    return (
+        identity["repository_id"] == context["repository_id"]
+        and identity["repository"] == context["repository"]
+        and str(identity["pr_number"]) == context["number"]
+        and identity["head_sha"] == context["head_sha"]
+    )
+
+
+def project_docs_patch(context: dict[str, str], source: dict[str, Any], proposal: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate then persist a derived result; an invalid result never inherits a source SHA."""
+    if proposal is None:
+        return {"outcome": "unavailable", "reason": "artifact_unavailable", "artifact": None, "result": None}
+    try:
+        artifact = docs_patch.validate_artifact(proposal)
+    except ValueError:
+        return {"outcome": "unavailable", "reason": "artifact_invalid", "artifact": None, "result": None}
+    if not artifact_matches_context(artifact, context):
+        return {"outcome": "unavailable", "reason": "artifact_identity_mismatch", "artifact": None, "result": None}
+    result = service.create_pull_request_docs_patch_result(context, source, artifact)
+    if result.get("status") not in {"created", "duplicate"}:
+        return {"outcome": "unavailable", "reason": "artifact_persistence_failed", "artifact": None, "result": result}
+    outcome = "proposed" if artifact["status"] == "proposed" else "unavailable"
+    return {"outcome": outcome, "reason": str(artifact["status"]), "artifact": artifact, "result": result}
+
+
 def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, str]) -> dict[str, Any]:
     source_key = service.github_pr_source_key(context)
     request = {
@@ -85,7 +145,7 @@ def webhook_payload(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-def evaluate(payload: dict[str, Any], delivery_id: str, token: str) -> dict[str, Any]:
+def evaluate(payload: dict[str, Any], delivery_id: str, token: str, artifact: dict[str, Any] | None = None) -> dict[str, Any]:
     context = service.github_pr_context(payload)
     source = create_source(payload, delivery_id, context)
     if source.get("status") not in {"created", "duplicate"}:
@@ -97,17 +157,13 @@ def evaluate(payload: dict[str, Any], delivery_id: str, token: str) -> dict[str,
     check_id = initial.get("id")
     if not check_id:
         raise RuntimeError("GitHub did not return a check run id")
-    files = common.list_pull_request_files_with_token(token, context["owner"], context["repo"], context["number"])
-    paths = [str(item.get("filename", "")) for item in files]
-    if len(files) >= 100:
-        outcome, summary = "needs-human-decision", "Pull request has 100 or more changed files; impact requires review."
-    else:
-        outcome, summary = classify_paths(paths)
+    projection = project_docs_patch(context, source, artifact)
     completed = common.update_check_run_with_token(
-        token, context["owner"], context["repo"], check_id, "completed", conclusion_for(outcome),
-        check_output(outcome, summary, context, source, paths),
+        token, context["owner"], context["repo"], check_id, "completed", "action_required",
+        patch_check_output(context, source, projection["artifact"], projection["outcome"]),
     )
-    return {"outcome": outcome, "source": source, "check_run": completed, "head_sha": context["head_sha"]}
+    return {"outcome": projection["outcome"], "reason": projection["reason"], "source": source,
+            "result": projection["result"], "check_run": completed, "head_sha": context["head_sha"]}
 
 
 def main() -> int:
@@ -115,6 +171,7 @@ def main() -> int:
     parser.add_argument("--payload-file", default=os.environ.get("GC_GITHUB_EVENT_PAYLOAD_FILE", ""))
     parser.add_argument("--delivery-id", default=os.environ.get("GC_GITHUB_DELIVERY_ID", ""))
     parser.add_argument("--token-env", default="GH_TOKEN")
+    parser.add_argument("--artifact-file", default=os.environ.get("GC_GITHUB_DOCS_PATCH_ARTIFACT_FILE", ""))
     args = parser.parse_args()
     if not args.payload_file:
         parser.error("--payload-file or GC_GITHUB_EVENT_PAYLOAD_FILE is required")
@@ -123,7 +180,15 @@ def main() -> int:
         parser.error(f"{args.token_env} is required")
     with open(args.payload_file, encoding="utf-8") as handle:
         payload = webhook_payload(json.load(handle))
-    result = evaluate(payload, args.delivery_id, token)
+    artifact = None
+    if args.artifact_file:
+        try:
+            with open(args.artifact_file, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            artifact = loaded if isinstance(loaded, dict) else None
+        except (OSError, json.JSONDecodeError):
+            artifact = None
+    result = evaluate(payload, args.delivery_id, token, artifact)
     print(json.dumps(result, sort_keys=True))
     return 0
 

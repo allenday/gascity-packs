@@ -990,6 +990,91 @@ def create_pull_request_source(request: dict[str, Any]) -> dict[str, Any]:
     return {"status": "created", "bead_id": created_id, "source_key": source_key}
 
 
+def github_pr_docs_patch_key(context: dict[str, str], artifact_sha256: str) -> str:
+    """Return the immutable identity for one patch proposed against one PR head."""
+    return "github-pr-docs-patch:{repository_id}:{number}:{head_sha}:{artifact_sha256}".format(
+        artifact_sha256=artifact_sha256,
+        **context,
+    )
+
+
+def docs_patch_artifact_path(source_key: str) -> str:
+    storage_id = common.safe_storage_id(source_key, "docs-patch")
+    return os.path.join(common.data_dir(), "docs-patches", f"{storage_id}.json")
+
+
+def create_pull_request_docs_patch_result(
+    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist and create an immutable derived bead without modifying its source."""
+    artifact_sha256 = str(artifact.get("artifact_sha256", "")).strip()
+    if not artifact_sha256:
+        return {"status": "failed", "reason": "artifact_digest_missing"}
+    source_key = github_pr_docs_patch_key(context, artifact_sha256)
+    artifact_path = docs_patch_artifact_path(source_key)
+    common.atomic_write_json(artifact_path, artifact)
+    try:
+        existing = addressed_sources_by_key(source_key)
+    except FileNotFoundError:
+        return {"status": "failed", "reason": "bd_not_available", "source_key": source_key}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "reason": "result_lookup_failed", "source_key": source_key, "detail": trim_output(str(exc))}
+
+    result = {
+        "bead_id": bead_id(existing[0]) if existing else "",
+        "source_key": source_key,
+        "artifact_sha256": artifact_sha256,
+        "artifact_path": artifact_path,
+    }
+    if existing:
+        return {"status": "duplicate", "reason": "source_key_exists", **result}
+
+    source_bead_id = str(source.get("bead_id") or source.get("id") or "").strip()
+    metadata = {
+        "external.provider": "github",
+        "external.kind": "pull-request-docs-patch",
+        "external.source_key": source_key,
+        "github.repository": context["repository"],
+        "github.repository_id": context["repository_id"],
+        "github.pr_number": context["number"],
+        "github.head_sha": context["head_sha"],
+        "docs_patch.artifact_sha256": artifact_sha256,
+        "docs_patch.patch_sha256": str(artifact.get("patch_sha256", "")),
+        "docs_patch.status": str(artifact.get("status", "")),
+        "docs_patch.artifact_path": artifact_path,
+        "docs_patch.source_bead_id": source_bead_id,
+    }
+    metadata = {key: value for key, value in metadata.items() if value}
+    description = "\n".join([
+        "## GitHub Pull Request Documentation Patch", "",
+        f"- Source bead: {source_bead_id}",
+        f"- Source key: {github_pr_source_key(context)}",
+        f"- Head SHA: {context['head_sha']}",
+        f"- Artifact digest: {artifact_sha256}",
+        "",
+        "This is immutable derived documentation-patch evidence; it does not modify the source bead or pull request branch.",
+    ])
+    title = f"GitHub PR docs patch {context['repository']}#{context['number']}"[:180]
+    city_root = common.city_root() or "."
+    command = gc_bd_command(
+        city_root, "create", "--json", title, "-t", "task", "--description", description,
+        "--labels", "github-intake,pull-request,docs-patch", "--external-ref", source_key,
+        "--metadata", json.dumps(metadata, sort_keys=True),
+    )
+    try:
+        created = run_subprocess(command, city_root)
+    except FileNotFoundError:
+        return {"status": "failed", "reason": "bd_not_available", **result}
+    if created.returncode != 0:
+        return {"status": "failed", "reason": "result_create_failed", **result,
+                "stdout": trim_output(created.stdout), "stderr": trim_output(created.stderr)}
+    created_id = str(extract_json_output(created.stdout).get("id", "")).strip()
+    if not created_id:
+        return {"status": "failed", "reason": "result_create_invalid_json", **result,
+                "stdout": trim_output(created.stdout), "stderr": trim_output(created.stderr)}
+    return {"status": "created", **result, "bead_id": created_id}
+
+
 def comment_from_bot(payload: dict[str, Any], app_cfg: dict[str, Any]) -> bool:
     comment = payload.get("comment") or {}
     user = comment.get("user") or {}
