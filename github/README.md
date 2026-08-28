@@ -41,13 +41,13 @@ for a revision. `no-impact` and `docs-sufficient` are successful conclusions;
 `docs-change-required`, `proposal-ready`, and `inconclusive` require action. A
 `proposal-ready` review may carry a bounded, evidence-backed documentation diff.
 
-The egress-enabled `github-docs-techdocs-reviewer` sidecar receives only a
-bounded exact-SHA evidence bundle (textual per-file PR patches plus immutable
-`github://…/blob/<head-sha>/…` references) and the vendored TechDocs skill. It
-runs no cagent tools, disables telemetry, defaults to `gpt-5.6-terra` with
-medium reasoning, and may receive only `GC_TECHDOCS_MODEL_TOKEN`. Configure
-its OpenAI-compatible base URL with `GC_TECHDOCS_MODEL_ENDPOINT`; never put a
-GitHub App credential in that service. Its raw review is not publishable.
+The trusted City runtime scans the sanitized assignment inbox, validates and
+copies each assignment to an immutable SHA-256-addressed input, creates one
+digest-labeled review bead, and slings it to `github.docs-impact-reviewer`.
+Compose fixes that Codex agent to `gpt-5.6-terra` with medium reasoning. It uses
+the City's existing ephemeral `CODEX_HOME`; Codex auth is never mounted into a
+GitHub service, evidence worker, model gateway, or other sidecar. The agent has
+no GitHub authority and writes only a digest-bearing raw review candidate.
 
 The untrusted worker receives only the same sanitized, revision-bound assignment and
 the vendored `developer-experience-techdocs` skill. It has no GitHub or git
@@ -68,7 +68,7 @@ The worker's public adapter contract is deliberately runtime-neutral:
   isolated artifact outbox.
 
 The networkless worker is validator-only for this deployment: it validates the
-sidecar's candidate, binds it to the exact assignment digest, and writes the
+City agent's candidate envelope and exact assignment digest, then writes the
 private envelope that the trusted supervisor alone can project and publish.
 If the reviewer is missing, times out, exits unsuccessfully, or returns an
 invalid or mismatched review, the worker removes any stale candidate and no

@@ -130,8 +130,17 @@ def consume_once(
                 raw = snapshot_file.read_bytes()
                 candidate_file = candidate_dir / snapshot_file.name
                 candidate = json.loads(candidate_file.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(candidate, dict)
+                    or set(candidate) != {"schema_version", "snapshot_sha256", "artifact"}
+                    or type(candidate["schema_version"]) is not int
+                    or candidate["schema_version"] != QUEUE_ARTIFACT_SCHEMA_VERSION
+                    or candidate["snapshot_sha256"] != snapshot_sha256_bytes(raw)
+                    or not isinstance(candidate["artifact"], dict)
+                ):
+                    continue
                 if not artifact_is_current(artifact_file, raw):
-                    review = docs_patch.validate_agent_review(candidate)
+                    review = docs_patch.validate_agent_review(candidate["artifact"])
                     assignment = worker.load_assignment_bytes(raw)
                     if review["identity"] == assignment["identity"] and review["agent_skill"] == assignment["agent_skill"]:
                         write_queue_artifact(artifact_file, queue_artifact(snapshot_sha256_bytes(raw), review)); handled += 1

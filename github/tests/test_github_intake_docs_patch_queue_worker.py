@@ -176,3 +176,70 @@ class DocsPatchQueueWorkerTests(unittest.TestCase):
 
             envelope = json.loads((artifacts / assignment_file.name).read_text(encoding="utf-8"))
             self.assertEqual(envelope["artifact"]["verdict"], "docs-change-required")
+
+    def test_city_candidate_must_name_the_exact_snapshot_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            assignments, artifacts, candidates = (
+                root / "assignments",
+                root / "artifacts",
+                root / "candidates",
+            )
+            assignments.mkdir()
+            candidates.mkdir()
+            assignment_file = assignments / "revision-bound.json"
+            assignment_file.write_text(json.dumps(assignment()), encoding="utf-8")
+            (candidates / assignment_file.name).write_text(
+                queue_worker.docs_patch.canonical_json({
+                    "schema_version": 1,
+                    "snapshot_sha256": "0" * 64,
+                    "artifact": review(),
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                queue_worker.consume_once(
+                    assignments,
+                    artifacts,
+                    adapter_command="",
+                    skill_dir=write_skill(root),
+                    candidate_dir=candidates,
+                ),
+                0,
+            )
+            self.assertFalse((artifacts / assignment_file.name).exists())
+
+    def test_city_candidate_with_exact_digest_reaches_trusted_artifact_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            assignments, artifacts, candidates = (
+                root / "assignments", root / "artifacts", root / "candidates",
+            )
+            assignments.mkdir()
+            candidates.mkdir()
+            assignment_file = assignments / "revision-bound.json"
+            assignment_file.write_text(json.dumps(assignment()), encoding="utf-8")
+            digest = queue_worker.snapshot_sha256(assignment_file)
+            (candidates / assignment_file.name).write_text(
+                queue_worker.docs_patch.canonical_json({
+                    "schema_version": 1,
+                    "snapshot_sha256": digest,
+                    "artifact": review(),
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                queue_worker.consume_once(
+                    assignments,
+                    artifacts,
+                    adapter_command="",
+                    skill_dir=write_skill(root),
+                    candidate_dir=candidates,
+                ),
+                1,
+            )
+            envelope = json.loads((artifacts / assignment_file.name).read_text(encoding="utf-8"))
+            self.assertEqual(envelope["snapshot_sha256"], digest)
+            self.assertEqual(envelope["artifact"]["identity"], assignment()["identity"])
