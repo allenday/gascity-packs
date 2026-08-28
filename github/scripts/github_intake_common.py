@@ -457,7 +457,7 @@ def build_manifest() -> dict[str, Any]:
         "hook_attributes": {"url": hook_url, "active": True},
         "redirect_url": admin.rstrip("/") + "/v0/github/app/manifest/callback",
         "callback_urls": [admin.rstrip("/") + "/v0/github/app/manifest/callback"],
-        "setup_url": admin,
+        "setup_url": admin.rstrip("/") + "/v0/github/admin",
         "description": "Workspace-hosted GitHub comment and event intake for Gas City",
         "public": False,
         "default_permissions": {

@@ -60,6 +60,10 @@ class GitHubIntakeCommonTests(unittest.TestCase):
             manifest["redirect_url"],
             "https://admin.example.com/v0/github/app/manifest/callback",
         )
+        self.assertEqual(
+            manifest["setup_url"],
+            "https://admin.example.com/v0/github/admin",
+        )
         self.assertIn("issue_comment", manifest["default_events"])
         self.assertIn("issues", manifest["default_events"])
         self.assertIn("pull_request", manifest["default_events"])
