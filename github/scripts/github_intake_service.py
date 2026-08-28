@@ -14,7 +14,7 @@ import traceback
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import github_intake_common as common
@@ -44,6 +44,24 @@ INTAKE_APP_CONFIG_REQUIRED_FIELDS = ("app_id", "webhook_secret", "private_key_pe
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
+
+
+def service_bind_config() -> tuple[str, str, int]:
+    """Return either a Unix socket or an explicit TCP listener configuration."""
+    socket_path = os.environ.get("GC_SERVICE_SOCKET", "").strip()
+    if socket_path:
+        return "unix", socket_path, 0
+    host = os.environ.get("GC_SERVICE_HOST", "").strip()
+    port = os.environ.get("GC_SERVICE_PORT", "").strip()
+    if not host or not port:
+        raise ValueError("GC_SERVICE_SOCKET or both GC_SERVICE_HOST and GC_SERVICE_PORT are required")
+    try:
+        parsed_port = int(port)
+    except ValueError as exc:
+        raise ValueError("GC_SERVICE_PORT must be an integer") from exc
+    if not 1 <= parsed_port <= 65535:
+        raise ValueError("GC_SERVICE_PORT must be between 1 and 65535")
+    return "tcp", host, parsed_port
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -2417,15 +2435,22 @@ def main() -> int:
             f"GitHub App config sync failed: {trim_output(str(exc))}",
             flush=True,
         )
-    socket_path = os.environ.get("GC_SERVICE_SOCKET")
-    if not socket_path:
-        raise SystemExit("GC_SERVICE_SOCKET is required")
     try:
-        os.remove(socket_path)
-    except FileNotFoundError:
-        pass
-    with ThreadingUnixHTTPServer(socket_path, IntakeHandler) as server:
-        print(f"[{common.current_service_name() or 'github'}] listening on {socket_path}")
+        kind, address, port = service_bind_config()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if kind == "unix":
+        try:
+            os.remove(address)
+        except FileNotFoundError:
+            pass
+        server_context: Any = ThreadingUnixHTTPServer(address, IntakeHandler)
+        listener = address
+    else:
+        server_context = ThreadingHTTPServer((address, port), IntakeHandler)
+        listener = f"{address}:{port}"
+    with server_context as server:
+        print(f"[{common.current_service_name() or 'github'}] listening on {listener}")
         server.serve_forever()
     return 0
 

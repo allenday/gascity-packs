@@ -132,6 +132,10 @@ class GitHubIntakeServiceTests(unittest.TestCase):
             "github-pr:123:42:" + "a" * 40,
         )
 
+    def test_service_bind_config_allows_explicit_container_tcp_listener(self) -> None:
+        with mock.patch.dict(os.environ, {"GC_SERVICE_SOCKET": "", "GC_SERVICE_HOST": "0.0.0.0", "GC_SERVICE_PORT": "8080"}):
+            self.assertEqual(service.service_bind_config(), ("tcp", "0.0.0.0", 8080))
+
     def test_github_event_env_includes_issue_context(self) -> None:
         payload = {
             "action": "labeled",
