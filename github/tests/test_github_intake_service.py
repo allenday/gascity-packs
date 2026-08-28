@@ -1925,33 +1925,25 @@ class DocsImpactRunPageTests(unittest.TestCase):
         os.environ.clear()
         os.environ.update(self._old_environ)
 
-    def test_run_page_renders_revision_bound_human_summary_patch_and_evidence(self) -> None:
-        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
-        service.save_docs_impact_run(
-            context,
-            {"bead_id": "mc-source"},
-            {"status": "proposed", "artifact_sha256": "b" * 64, "patch_sha256": "c" * 64,
-             "diff": "diff --git a/docs/guide.md b/docs/guide.md\n+New guidance.\n",
-             "files": [{"path": "docs/guide.md", "sha256": "d" * 64}],
-             "claims": [{"claim": "Guide explains the change.", "evidence": "git:" + "a" * 40, "release_scope": "unreleased"}],
-             "checks": [{"command": "make docs-check", "status": "passed", "explanation": "OK"}]},
-            "proposed", "", ["github/scripts/intake.py", "docs/guide.md"], {"id": 81},
-        )
-        handler = DummyWebhookHandler(b"", {})
-        service.IntakeHandler._do_admin_get(
-            handler,
-            urllib.parse.urlparse("/v0/github/admin/runs?repository=allenday%2Fdemo&repository_id=17&pr=9&sha=" + "a" * 40),
-        )
+    def test_run_page_hides_city_identifier_and_collapses_evidence(self) -> None:
+        record = {
+            "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": "9", "head_sha": "a" * 40},
+            "review": {
+                "verdict": "proposal-ready", "rationale": "City record mc-private requires new usage guidance.",
+                "evidence": [{"path": "docs/guide.md", "evidence": "github://allenday/demo/blob/" + "a" * 40 + "/docs/guide.md"}],
+                "proposal": {"diff": "diff --git a/docs/guide.md b/docs/guide.md\n+&lt;safe&gt;\n"},
+            },
+            "source_bead_id": "mc-private",
+        }
 
-        page = handler.wfile.getvalue().decode("utf-8")
-        self.assertEqual(handler.status, 200)
-        self.assertIn("Documentation update proposed", page)
-        self.assertIn("github/scripts/intake.py", page)
-        self.assertIn("docs/guide.md", page)
-        self.assertIn("diff --git", page)
-        self.assertIn("Guide explains the change.", page)
-        self.assertIn("Artifact integrity digest", page)
-        self.assertNotIn("GitHub Intake</h1>", page)
+        page = service.render_docs_impact_run(record)
+
+        self.assertIn("Decision", page)
+        self.assertIn("Why", page)
+        self.assertIn("Next action", page)
+        self.assertIn("<details><summary>Evidence", page)
+        self.assertIn("&amp;lt;safe&amp;gt;", page)
+        self.assertNotIn("mc-", page)
 
     def test_run_page_rejects_missing_or_mismatched_revision_identity(self) -> None:
         handler = DummyWebhookHandler(b"", {})

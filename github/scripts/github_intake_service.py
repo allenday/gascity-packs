@@ -48,6 +48,7 @@ DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION = 1
 DOCS_IMPACT_AGENT_SKILL = "developer-experience-techdocs"
 DOCS_IMPACT_ASSIGNMENT_LOCK_TIMEOUT_SECONDS = 5.0
 DOCS_IMPACT_ASSIGNMENT_LOCK_RETRY_SECONDS = 0.01
+CITY_IDENTIFIER_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:mc|ga)-[A-Za-z0-9][A-Za-z0-9-]*(?![A-Za-z0-9])", re.IGNORECASE)
 
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -1053,6 +1054,13 @@ def docs_impact_assignment_lock(assignment_path: str) -> Any:
         os.close(descriptor)
 
 
+@contextmanager
+def docs_impact_run_lock(context: dict[str, str]) -> Any:
+    """Serialize terminal check publication for one immutable PR revision."""
+    with docs_impact_assignment_lock(docs_impact_run_path(context)):
+        yield
+
+
 def is_complete_docs_impact_assignment(value: Any, identity: dict[str, Any]) -> bool:
     """Accept only a canonical descriptor for the source being queued."""
     if not isinstance(value, dict) or set(value) != {
@@ -1133,6 +1141,40 @@ def save_docs_impact_run(
     }
     common.atomic_write_json(docs_impact_run_path(context), record)
     return record
+
+
+def save_agent_review_run(
+    context: dict[str, str], review: dict[str, Any], check_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist the private, revision-bound review before its GitHub projection."""
+    identity = {
+        "repository": context["repository"],
+        "repository_id": context["repository_id"],
+        "pr_number": context["number"],
+        "head_sha": context["head_sha"],
+    }
+    existing = common.read_json(docs_impact_run_path(context))
+    prior_check_run_id = ""
+    if (
+        check_run is None
+        and isinstance(existing, dict)
+        and existing.get("identity") == identity
+        and existing.get("review") == review
+    ):
+        prior_check_run_id = str(existing.get("check_run_id", ""))
+    record = {
+        "schema_version": 2,
+        "identity": identity,
+        "review": review,
+        "check_run_id": str((check_run or {}).get("id", prior_check_run_id)),
+    }
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
+def public_docs_impact_text(value: Any) -> str:
+    """Prevent internal City work identifiers from reaching GitHub views."""
+    return CITY_IDENTIFIER_PATTERN.sub("[internal review]", str(value))
 
 
 def load_docs_impact_run(context: dict[str, str]) -> dict[str, Any] | None:
@@ -2354,65 +2396,36 @@ def docs_impact_run_context(query: str) -> dict[str, str] | None:
 
 def render_docs_impact_run(record: dict[str, Any]) -> str:
     """Render the safe public projection for one immutable docs-impact run."""
-    identity = record["identity"]
-    artifact = record.get("artifact") if isinstance(record.get("artifact"), dict) else None
-    outcome = str(record.get("outcome", ""))
-    if outcome == "proposed" and artifact is not None:
-        heading = "Documentation update proposed"
-        next_step = "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
-    elif outcome == "no-impact":
-        heading = "No documentation update needed"
+    review = record.get("review") if isinstance(record.get("review"), dict) else {}
+    verdict = str(review.get("verdict", ""))
+    rationale = html.escape(public_docs_impact_text(review.get("rationale", "")))
+    if verdict in {"no-impact", "docs-sufficient"}:
         next_step = "No documentation action is required for this revision."
+    elif verdict == "proposal-ready":
+        next_step = "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
+    elif verdict == "inconclusive":
+        next_step = "Request a completed documentation review for this revision."
     else:
-        heading = "Documentation review needed"
         next_step = "Update the developer documentation for this revision, then push a new commit."
-    paths = record.get("changed_paths") if isinstance(record.get("changed_paths"), list) else []
-    changed_paths = "".join(f"<li><code>{html.escape(str(path))}</code></li>" for path in paths) or "<li>None reported</li>"
-    proposal = "<p>No safe documentation patch is available for this revision.</p>"
-    evidence = ""
-    if artifact is not None:
-        files = artifact.get("files") if isinstance(artifact.get("files"), list) else []
-        file_list = "".join(f"<li><code>{html.escape(str(item.get('path', '')))}</code></li>" for item in files if isinstance(item, dict))
-        diff = html.escape(str(artifact.get("diff", "")))
-        proposal = (
-            f"<p>Proposal status: <strong>{html.escape(str(artifact.get('status', '')))}</strong></p>"
-            f"<h2>Proposed documentation files</h2><ul>{file_list or '<li>None</li>'}</ul>"
-            f"<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
-        )
-        claims = artifact.get("claims") if isinstance(artifact.get("claims"), list) else []
-        claim_rows = "".join(
-            f"<li><strong>{html.escape(str(item.get('claim', '')))}</strong><br>"
-            f"<a href=\"{html.escape(str(item.get('evidence', '')), quote=True)}\">evidence</a> — "
-            f"{html.escape(str(item.get('release_scope', '')))}</li>"
-            for item in claims if isinstance(item, dict)
-        )
-        checks = artifact.get("checks") if isinstance(artifact.get("checks"), list) else []
-        check_rows = "".join(
-            f"<li><code>{html.escape(str(item.get('command', '')))}</code>: "
-            f"<strong>{html.escape(str(item.get('status', '')))}</strong> — {html.escape(str(item.get('explanation', '')))}</li>"
-            for item in checks if isinstance(item, dict)
-        )
-        evidence = f"""
-<h2>Evidence</h2>
-<dl>
-  <dt>Artifact integrity digest</dt><dd><code>{html.escape(str(artifact.get('artifact_sha256', '')))}</code></dd>
-  <dt>Patch digest</dt><dd><code>{html.escape(str(artifact.get('patch_sha256', '')))}</code></dd>
-</dl>
-<h3>Claims</h3><ul>{claim_rows or '<li>None</li>'}</ul>
-<h3>Validation</h3><ul>{check_rows or '<li>None</li>'}</ul>
-"""
-    source_bead = html.escape(str(record.get("source_bead_id", "")))
+    evidence_rows = "".join(
+        f"<li><code>{html.escape(public_docs_impact_text(item.get('path', '')))}</code>: "
+        f"<a href=\"{html.escape(public_docs_impact_text(item.get('evidence', '')), quote=True)}\">evidence</a></li>"
+        for item in review.get("evidence", []) if isinstance(item, dict)
+    ) or "<li>None</li>"
+    proposal = ""
+    if verdict == "proposal-ready" and isinstance(review.get("proposal"), dict):
+        diff = html.escape(public_docs_impact_text(review["proposal"].get("diff", "")))
+        proposal = f"<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
     return f"""<!doctype html>
-<html lang=\"en\"><head><meta charset=\"utf-8\"><title>{html.escape(heading)}</title>
+<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Documentation impact review</title>
 <style>body {{ font-family: system-ui, sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }} pre {{ background:#f6f8fa; padding:1rem; overflow:auto; }} code {{ font-family: ui-monospace, monospace; }} dt {{ font-weight:600; margin-top:.5rem; }}</style>
 </head><body>
-<h1>{html.escape(heading)}</h1>
-<p><strong>{html.escape(str(identity['repository']))}#{html.escape(str(identity['pr_number']))}</strong> at <code>{html.escape(str(identity['head_sha']))}</code></p>
-<p>{html.escape(next_step)}</p>
-<h2>Changed paths</h2><ul>{changed_paths}</ul>
+<h1>Documentation impact review</h1>
+<h2>Decision</h2><p>{html.escape(verdict)}</p>
+<h2>Why</h2><p>{rationale}</p>
+<h2>Next action</h2><p>{html.escape(next_step)}</p>
 {proposal}
-{evidence}
-<details><summary>Run identity</summary><p>Source evidence: <code>{source_bead or 'unavailable'}</code></p></details>
+<details><summary>Evidence</summary><ul>{evidence_rows}</ul></details>
 </body></html>"""
 
 

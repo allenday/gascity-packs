@@ -9,7 +9,98 @@ import os
 import sys
 from typing import Any
 
+import github_intake_docs_patch as docs_patch
 import github_intake_service as service
+
+
+SUCCESSFUL_REVIEW_VERDICTS = {"no-impact", "docs-sufficient"}
+
+
+def _review_identity(context: dict[str, str]) -> dict[str, Any] | None:
+    """Return the one agent-review identity a PR revision may authorize."""
+    try:
+        number = int(context["number"])
+        identity = {
+            "repository_id": context["repository_id"],
+            "repository": context["repository"],
+            "pr_number": number,
+            "head_sha": context["head_sha"],
+            "source_key": service.github_pr_source_key(context),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    return identity if number > 0 else None
+
+
+def _next_action(verdict: str) -> str:
+    if verdict in SUCCESSFUL_REVIEW_VERDICTS:
+        return "No documentation action is required for this revision."
+    if verdict == "proposal-ready":
+        return "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
+    if verdict == "inconclusive":
+        return "Request a completed documentation review for this revision."
+    return "Update the developer documentation for this revision, then push a new commit."
+
+
+def project_agent_review(
+    context: dict[str, str], source: dict[str, Any], review: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Persist only a canonical review bound to this exact source revision."""
+    expected_identity = _review_identity(context)
+    if expected_identity is None or not isinstance(source, dict):
+        return None
+    try:
+        validated = docs_patch.validate_agent_review(review)
+    except (TypeError, ValueError):
+        return None
+    if validated["identity"] != expected_identity:
+        return None
+    if str(source.get("source_key", "")).strip() != expected_identity["source_key"]:
+        return None
+    return service.save_agent_review_run(context, validated)
+
+
+def publish_agent_review(token: str, context: dict[str, str], review: dict[str, Any]) -> dict[str, Any]:
+    """Create the sole terminal Check Run after its exact review was persisted."""
+    expected_identity = _review_identity(context)
+    if expected_identity is None:
+        return {"status": "ignored", "reason": "context_invalid"}
+    try:
+        validated = docs_patch.validate_agent_review(review)
+    except (TypeError, ValueError):
+        return {"status": "ignored", "reason": "review_invalid"}
+    if validated["identity"] != expected_identity:
+        return {"status": "ignored", "reason": "review_identity_mismatch"}
+    with service.docs_impact_run_lock(context):
+        record = service.load_docs_impact_run(context)
+        if not isinstance(record, dict) or record.get("review") != validated:
+            return {"status": "ignored", "reason": "review_not_projected"}
+        if str(record.get("check_run_id", "")).strip():
+            return {"status": "duplicate", "check_run_id": str(record["check_run_id"])}
+        try:
+            owner, repository = context["repository"].split("/", 1)
+        except (KeyError, ValueError):
+            return {"status": "ignored", "reason": "repository_invalid"}
+        verdict = validated["verdict"]
+        next_action = _next_action(verdict)
+        check_run = service.common.create_check_run_with_token(
+            token,
+            owner,
+            repository,
+            context["head_sha"],
+            f"Documentation impact: {verdict}",
+            "completed",
+            "success" if verdict in SUCCESSFUL_REVIEW_VERDICTS else "action_required",
+            {
+                "title": f"Documentation impact: {verdict}",
+                "summary": service.public_docs_impact_text(f"{validated['rationale']}\n\nNext action: {next_action}"),
+            },
+            service.common.docs_impact_run_url(
+                context["repository"], context["repository_id"], context["number"], context["head_sha"],
+            ),
+        )
+        saved = service.save_agent_review_run(context, validated, check_run)
+        return {"status": "published", "check_run": check_run, "record": saved}
 
 def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, str]) -> dict[str, Any]:
     source_key = service.github_pr_source_key(context)
