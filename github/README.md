@@ -28,22 +28,39 @@ The current slice ships:
 ## Pull-request documentation impact (patch-first)
 
 For configured `pull_request` events, the docs-impact rule records immutable
-source evidence for the exact PR head SHA and publishes the `Gas City /
-docs-impact` Check Run for that revision. It is patch-first: a TechDocs worker
-may propose a bounded, evidence-backed documentation diff, but neither the
-worker nor the check writes to the PR branch or opens a PR.
+source evidence for the exact PR head SHA and queues a revision-bound City
+TechDocs assignment. A trusted projector can publish the `Gas City /
+docs-impact` Check Run only after accepting a completed review for that exact
+revision. Neither the worker nor the check writes to the PR branch or opens a
+pull request.
 
-The trusted intake supervisor validates and persists a proposal as a separate
-immutable result bead keyed by repository ID, PR number, head SHA, and patch
-digest. It is never substituted for its source bead. The public check names
-the source bead, source key, code SHA, and artifact digest; every resulting
-state remains `ACTION_REQUIRED`, including unavailable or unsafe proposals.
+The trusted intake supervisor validates and persists the first accepted review
+for a revision. `no-impact` and `docs-sufficient` are successful conclusions;
+`docs-change-required`, `proposal-ready`, and `inconclusive` require action. A
+`proposal-ready` review may carry a bounded, evidence-backed documentation diff.
 
-The untrusted worker receives only a sanitized, revision-bound snapshot and
-has no GitHub credentials, git credentials, City/config mount, writable
-supervisor state, or network access. It can emit only a canonical artifact to
-its isolated outbox. A new PR head SHA creates a new source identity and is
-evaluated independently; it never inherits an earlier patch result.
+The untrusted worker receives only a sanitized, revision-bound assignment and
+the vendored `developer-experience-techdocs` skill. It has no GitHub or git
+credentials, City/config mount, writable supervisor state, or network access.
+A new PR head SHA creates a new source identity and is evaluated independently;
+it never inherits an earlier result.
+
+The worker's public adapter contract is deliberately runtime-neutral:
+
+- `GC_TECHDOCS_ADAPTER_COMMAND` is split into an argument vector and executed
+  directly, without a shell. The worker appends `--skill-dir <path>`.
+- The adapter reads one canonical assignment JSON document from standard input
+  and, on successful completion, writes exactly one
+  `github-pr-docs-impact-review` JSON document to standard output.
+- The worker supplies a scrubbed process environment, enforces
+  `GC_TECHDOCS_ADAPTER_TIMEOUT_SECONDS`, validates the review and its exact
+  assignment identity, and only then writes a canonical candidate to the
+  isolated artifact outbox.
+
+No agent runtime is bundled or inferred. If the command is unset, missing,
+times out, exits unsuccessfully, or returns an invalid or mismatched review,
+the worker removes any stale candidate and writes no artifact. Consequently
+the trusted side cannot project a verdict and no GitHub check is published.
 
 The `/gc fix` path posts a queued-in-bugflow acknowledgement after the bugflow
 source bead and router scan succeed. Bugflow snapshots the issue and comments,
