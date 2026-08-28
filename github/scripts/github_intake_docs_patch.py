@@ -22,6 +22,7 @@ DOCUMENTATION_FILENAMES = {"readme.md", "changelog.md", "contributing.md"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIFF_PATH_PATTERN = re.compile(r"^diff --git a/(.+) b/(.+)$", re.MULTILINE)
+RFC3339_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 SECRET_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
@@ -38,6 +39,7 @@ IDENTITY_FIELDS = {
 FILE_FIELDS = {"path", "sha256"}
 CLAIM_FIELDS = {"claim", "evidence", "release_scope"}
 CHECK_FIELDS = {"command", "status", "explanation"}
+ROOT_FIELDS_WITH_DIGEST = ROOT_FIELDS | {"artifact_sha256"}
 
 
 def canonical_json(value: dict[str, Any]) -> str:
@@ -125,6 +127,23 @@ def _validate_diff(diff: Any, patch_sha256: str, files: list[dict[str, Any]]) ->
     file_paths = {file["path"] for file in files}
     if diff_paths != file_paths:
         raise ValueError("diff paths must exactly match files paths")
+    for line in diff.splitlines():
+        if line.startswith("--- "):
+            path = line.removeprefix("--- ")
+            if path != "/dev/null":
+                if not path.startswith("a/"):
+                    raise ValueError(f"unsafe unified diff path: {path!r}")
+                path = _validate_path(path.removeprefix("a/"))
+                if path not in file_paths:
+                    raise ValueError("unified diff paths must exactly match files paths")
+        elif line.startswith("+++ "):
+            path = line.removeprefix("+++ ")
+            if path != "/dev/null":
+                if not path.startswith("b/"):
+                    raise ValueError(f"unsafe unified diff path: {path!r}")
+                path = _validate_path(path.removeprefix("b/"))
+                if path not in file_paths:
+                    raise ValueError("unified diff paths must exactly match files paths")
     return diff
 
 
@@ -157,7 +176,10 @@ def _validate_claims(value: Any) -> list[dict[str, str]]:
         evidence = _text(item["evidence"], f"claims[{index}].evidence", 2048)
         if not (evidence.startswith("github://") or evidence.startswith("https://") or evidence.startswith("git:")):
             raise ValueError(f"claims[{index}].evidence must be an immutable evidence reference")
-        if re.search(r"/(?:blob|commit)/[0-9a-f]{40}(?:/|$)", evidence) is None and not evidence.startswith("git:"):
+        git_sha = re.search(r"\b[0-9a-f]{40}\b", evidence)
+        if evidence.startswith("git:") and git_sha is None:
+            raise ValueError(f"claims[{index}].evidence must pin a commit SHA")
+        if not evidence.startswith("git:") and re.search(r"/(?:blob|commit)/[0-9a-f]{40}(?:/|$)", evidence) is None:
             raise ValueError(f"claims[{index}].evidence must pin a commit SHA")
         claims.append({
             "claim": _redact(_text(item["claim"], f"claims[{index}].claim", 4096)),
@@ -188,16 +210,21 @@ def _validate_checks(value: Any) -> list[dict[str, str]]:
 def validate_artifact(value: dict[str, Any]) -> dict[str, Any]:
     """Return a canonical, redacted artifact or raise ValueError for unsafe input."""
     value = _expect_object(value, "artifact")
-    _expect_fields(value, ROOT_FIELDS, "artifact")
+    if set(value) != ROOT_FIELDS and set(value) != ROOT_FIELDS_WITH_DIGEST:
+        _expect_fields(value, ROOT_FIELDS, "artifact")
     if value["schema_version"] != SCHEMA_VERSION:
         raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
     if value["status"] not in {"proposed", "unavailable", "unsafe"}:
         raise ValueError("status must be proposed, unavailable, or unsafe")
     generated_at = _text(value["generated_at"], "generated_at", 64)
+    if RFC3339_PATTERN.fullmatch(generated_at) is None:
+        raise ValueError("generated_at must be RFC3339 with a timezone")
     try:
-        dt.datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        parsed_time = dt.datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("generated_at must be RFC3339") from exc
+    if parsed_time.tzinfo is None or parsed_time.utcoffset() is None:
+        raise ValueError("generated_at must be RFC3339 with a timezone")
     patch_sha256 = _text(value["patch_sha256"], "patch_sha256", 64).lower()
     if not SHA256_PATTERN.fullmatch(patch_sha256):
         raise ValueError("patch_sha256 must be a SHA-256 digest")
@@ -213,5 +240,11 @@ def validate_artifact(value: dict[str, Any]) -> dict[str, Any]:
         "claims": _validate_claims(value["claims"]),
         "checks": _validate_checks(value["checks"]),
     }
-    artifact["artifact_sha256"] = hashlib.sha256(canonical_json(artifact).encode("utf-8")).hexdigest()
+    artifact_sha256 = hashlib.sha256(canonical_json(artifact).encode("utf-8")).hexdigest()
+    supplied_digest = value.get("artifact_sha256")
+    if supplied_digest is not None:
+        supplied_digest = _text(supplied_digest, "artifact_sha256", 64).lower()
+        if not SHA256_PATTERN.fullmatch(supplied_digest) or supplied_digest != artifact_sha256:
+            raise ValueError("artifact_sha256 does not match canonical artifact")
+    artifact["artifact_sha256"] = artifact_sha256
     return artifact

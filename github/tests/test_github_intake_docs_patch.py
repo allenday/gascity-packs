@@ -20,6 +20,22 @@ index 1111111..2222222 100644
 +New guidance.
 """
 
+MULTI_DIFF = """diff --git a/docs/guide.md b/docs/guide.md
+index 1111111..2222222 100644
+--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -1 +1 @@
+-Old guidance.
++New guidance.
+diff --git a/docs/install.md b/docs/install.md
+index 3333333..4444444 100644
+--- a/docs/install.md
++++ b/docs/install.md
+@@ -1 +1 @@
+-Old install.
++New install.
+"""
+
 
 def proposal() -> dict[str, object]:
     return {
@@ -60,6 +76,31 @@ class DocsPatchTests(unittest.TestCase):
         self.assertEqual(first["artifact_sha256"], second["artifact_sha256"])
         self.assertEqual(first["patch_sha256"], hashlib.sha256(DIFF.encode("utf-8")).hexdigest())
 
+    def test_validate_canonicalizes_multi_item_ledger_ordering(self) -> None:
+        artifact = proposal()
+        artifact["diff"] = MULTI_DIFF
+        artifact["patch_sha256"] = hashlib.sha256(MULTI_DIFF.encode("utf-8")).hexdigest()
+        artifact["files"] = [
+            {"path": "docs/install.md", "sha256": "d" * 64},
+            {"path": "docs/guide.md", "sha256": "c" * 64},
+        ]
+        artifact["claims"] = [
+            {"claim": "Install instructions changed.", "evidence": "git:" + "b" * 40, "release_scope": "unreleased"},
+            artifact["claims"][0],
+        ]
+        artifact["checks"] = [
+            {"command": "make link-check", "status": "passed", "explanation": "Links passed."},
+            artifact["checks"][0],
+        ]
+        reordered = copy.deepcopy(artifact)
+        for field in ("files", "claims", "checks"):
+            reordered[field] = list(reversed(reordered[field]))
+
+        self.assertEqual(
+            docs_patch.validate_artifact(artifact)["artifact_sha256"],
+            docs_patch.validate_artifact(reordered)["artifact_sha256"],
+        )
+
     def test_validate_rejects_traversal_and_non_documentation_paths(self) -> None:
         for path in ("../docs/escape.md", "/docs/absolute.md", "src/app.py"):
             with self.subTest(path=path):
@@ -83,12 +124,46 @@ class DocsPatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "too large"):
             docs_patch.validate_artifact(oversized)
 
+    def test_validate_rejects_unsafe_unified_diff_body_paths(self) -> None:
+        artifact = proposal()
+        artifact["diff"] = DIFF.replace("--- a/docs/guide.md", "--- a/src/app.py").replace(
+            "+++ b/docs/guide.md", "+++ b/src/app.py"
+        )
+        artifact["patch_sha256"] = hashlib.sha256(artifact["diff"].encode("utf-8")).hexdigest()
+
+        with self.assertRaisesRegex(ValueError, "path"):
+            docs_patch.validate_artifact(artifact)
+
     def test_validate_rejects_claim_without_immutable_evidence(self) -> None:
         artifact = proposal()
         artifact["claims"] = [{"claim": "A material claim.", "evidence": "", "release_scope": "unreleased"}]
 
         with self.assertRaisesRegex(ValueError, "evidence"):
             docs_patch.validate_artifact(artifact)
+
+    def test_validate_rejects_git_branch_evidence(self) -> None:
+        artifact = proposal()
+        artifact["claims"][0]["evidence"] = "git:main"
+
+        with self.assertRaisesRegex(ValueError, "commit SHA"):
+            docs_patch.validate_artifact(artifact)
+
+    def test_validate_requires_timezone_in_generation_time(self) -> None:
+        artifact = proposal()
+        artifact["generated_at"] = "2026-08-28T12:00:00"
+
+        with self.assertRaisesRegex(ValueError, "RFC3339"):
+            docs_patch.validate_artifact(artifact)
+
+    def test_validate_accepts_and_revalidates_artifact_digest(self) -> None:
+        validated = docs_patch.validate_artifact(proposal())
+
+        revalidated = docs_patch.validate_artifact(validated)
+        self.assertEqual(revalidated["artifact_sha256"], validated["artifact_sha256"])
+
+        validated["artifact_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "artifact_sha256"):
+            docs_patch.validate_artifact(validated)
 
     def test_validate_redacts_secrets_from_persisted_fields(self) -> None:
         artifact = proposal()
