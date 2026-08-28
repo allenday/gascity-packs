@@ -199,6 +199,65 @@ class DocsImpactTests(unittest.TestCase):
         self.assertEqual(duplicate["status"], "duplicate")
         create_check.assert_called_once()
 
+    def test_first_valid_review_is_immutable_against_a_later_valid_review(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        source = {"source_key": "github-pr:17:9:" + "a" * 40}
+        first = valid_agent_review()
+        later = valid_agent_review()
+        later["rationale"] = "A different valid review must not replace the first decision."
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
+            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
+        ), mock.patch.object(
+            service.common, "create_check_run_with_token", return_value={"id": 81}
+        ) as create_check:
+            self.assertIsNotNone(docs_impact.project_agent_review(context, source, first))
+            self.assertIsNone(docs_impact.project_agent_review(context, source, later))
+            self.assertEqual(docs_impact.publish_agent_review("token", context, later)["status"], "ignored")
+            self.assertEqual(docs_impact.publish_agent_review("token", context, first)["status"], "published")
+
+        create_check.assert_called_once()
+
+    def test_retry_after_publication_failure_never_posts_a_second_check(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        source = {"source_key": "github-pr:17:9:" + "a" * 40}
+        review = valid_agent_review()
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
+            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
+        ), mock.patch.object(
+            service.common, "create_check_run_with_token", side_effect=[RuntimeError("connection lost"), {"id": 81}]
+        ) as create_check:
+            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
+            with self.assertRaisesRegex(RuntimeError, "connection lost"):
+                docs_impact.publish_agent_review("token", context, review)
+            retry = docs_impact.publish_agent_review("token", context, review)
+
+        self.assertEqual(retry["status"], "publication_pending")
+        create_check.assert_called_once()
+
+    def test_check_summary_and_link_hide_the_review_identity(self) -> None:
+        head_sha = "a" * 40
+        source_key = "github-pr:17:9:" + head_sha
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": head_sha}
+        source = {"source_key": source_key}
+        review = valid_agent_review()
+        review["rationale"] = f"Review {source_key} at {head_sha} for repository 17."
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
+            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root, "GITHUB_INTAKE_ADMIN_PUBLIC_URL": "https://city.example"}
+        ), mock.patch.object(
+            service.common, "create_check_run_with_token", return_value={"id": 81}
+        ) as create_check:
+            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
+            self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
+
+        args = create_check.call_args.args
+        self.assertNotIn(source_key, args[7]["summary"])
+        self.assertNotIn(head_sha, args[7]["summary"])
+        self.assertNotIn("17", args[7]["summary"])
+        self.assertNotIn(source_key, args[8])
+        self.assertNotIn(head_sha, args[8])
+        self.assertNotIn("repository_id", args[8])
+        self.assertEqual(args[8], "https://city.example/v0/github/admin/runs?run=" + service.docs_impact_run_locator(context))
+
     def test_concurrent_publication_creates_one_completed_check(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
         source = {"source_key": "github-pr:17:9:" + "a" * 40}

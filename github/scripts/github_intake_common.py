@@ -438,20 +438,12 @@ def admin_dashboard_url() -> str:
     return admin.rstrip("/") + "/v0/github/admin" if admin else ""
 
 
-def docs_impact_run_url(repository: str, repository_id: str, number: str, head_sha: str) -> str:
-    """Return the public, revision-bound docs-impact evidence URL."""
+def docs_impact_run_url(run_locator: str) -> str:
+    """Return the public opaque locator for a docs-impact evidence run."""
     dashboard = admin_dashboard_url()
-    if not dashboard:
+    if not dashboard or re.fullmatch(r"docs-impact-run-[0-9a-f]{24}", run_locator) is None:
         return ""
-    query = urllib.parse.urlencode(
-        {
-            "repository": repository,
-            "repository_id": repository_id,
-            "pr": number,
-            "sha": head_sha,
-        }
-    )
-    return dashboard.rstrip("/") + "/runs?" + query
+    return dashboard.rstrip("/") + "/runs?" + urllib.parse.urlencode({"run": run_locator})
 
 
 def webhook_url() -> str:

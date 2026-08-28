@@ -1926,15 +1926,16 @@ class DocsImpactRunPageTests(unittest.TestCase):
         os.environ.update(self._old_environ)
 
     def test_run_page_hides_city_identifier_and_collapses_evidence(self) -> None:
-        record = {
-            "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": "9", "head_sha": "a" * 40},
-            "review": {
-                "verdict": "proposal-ready", "rationale": "City record mc-private requires new usage guidance.",
-                "evidence": [{"path": "docs/guide.md", "evidence": "github://allenday/demo/blob/" + "a" * 40 + "/docs/guide.md"}],
-                "proposal": {"diff": "diff --git a/docs/guide.md b/docs/guide.md\n+&lt;safe&gt;\n"},
-            },
-            "source_bead_id": "mc-private",
-        }
+        head_sha = "a" * 40
+        source_key = "github-pr:17:9:" + head_sha
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": head_sha}
+        record = service.save_agent_review_run(context, {
+            "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": 9, "head_sha": head_sha, "source_key": source_key},
+            "verdict": "proposal-ready",
+            "rationale": f"City record mc-private cites {source_key} and {head_sha}.",
+            "evidence": [{"path": "docs/guide.md", "evidence": "github://allenday/demo/blob/" + head_sha + "/" + source_key}],
+            "proposal": {"diff": "diff --git a/docs/guide.md b/docs/guide.md\n+" + source_key + "\n" + head_sha + "\n"},
+        })
 
         page = service.render_docs_impact_run(record)
 
@@ -1942,8 +1943,28 @@ class DocsImpactRunPageTests(unittest.TestCase):
         self.assertIn("Why", page)
         self.assertIn("Next action", page)
         self.assertIn("<details><summary>Evidence", page)
-        self.assertIn("&amp;lt;safe&amp;gt;", page)
         self.assertNotIn("mc-", page)
+        self.assertNotIn(source_key, page)
+        self.assertNotIn(head_sha, page)
+        self.assertNotIn("repository_id", page)
+        self.assertNotIn("github://", page)
+
+    def test_run_page_loads_by_opaque_locator_only(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        service.save_agent_review_run(context, {
+            "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": 9,
+                         "head_sha": "a" * 40, "source_key": "github-pr:17:9:" + "a" * 40},
+            "verdict": "docs-sufficient", "rationale": "The documentation is adequate.",
+            "evidence": [{"path": "docs/guide.md", "evidence": "git:" + "a" * 40}], "proposal": None,
+        })
+        handler = DummyWebhookHandler(b"", {})
+        service.IntakeHandler._do_admin_get(
+            handler,
+            urllib.parse.urlparse("/v0/github/admin/runs?run=" + service.docs_impact_run_locator(context)),
+        )
+
+        self.assertEqual(handler.status, 200)
+        self.assertIn("Documentation impact review", handler.wfile.getvalue().decode("utf-8"))
 
     def test_run_page_rejects_missing_or_mismatched_revision_identity(self) -> None:
         handler = DummyWebhookHandler(b"", {})

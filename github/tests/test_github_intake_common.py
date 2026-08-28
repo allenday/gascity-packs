@@ -123,19 +123,19 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         self.assertNotIn("conclusion", request.call_args.kwargs["payload"])
 
     @mock.patch.object(common, "github_api_request")
-    def test_docs_impact_check_links_to_its_exact_pull_request_run(self, request: mock.Mock) -> None:
+    def test_docs_impact_check_links_to_an_opaque_run_locator(self, request: mock.Mock) -> None:
         request.return_value = {"id": 9}
         os.environ["GITHUB_INTAKE_ADMIN_PUBLIC_URL"] = "https://city.example"
 
         common.create_check_run_with_token(
             "installation-token", "allenday", "repo", "a" * 40, "Gas City / docs-impact", "in_progress", None,
             {"title": "Evaluating", "summary": "Working."},
-            details_url=common.docs_impact_run_url("allenday/repo", "17", "9", "a" * 40),
+            details_url=common.docs_impact_run_url("docs-impact-run-0123456789abcdef01234567"),
         )
 
         self.assertEqual(
             request.call_args.kwargs["payload"]["details_url"],
-            "https://city.example/v0/github/admin/runs?repository=allenday%2Frepo&repository_id=17&pr=9&sha=" + "a" * 40,
+            "https://city.example/v0/github/admin/runs?run=docs-impact-run-0123456789abcdef01234567",
         )
 
     @mock.patch.object(common, "github_api_request")

@@ -32,16 +32,6 @@ def _review_identity(context: dict[str, str]) -> dict[str, Any] | None:
     return identity if number > 0 else None
 
 
-def _next_action(verdict: str) -> str:
-    if verdict in SUCCESSFUL_REVIEW_VERDICTS:
-        return "No documentation action is required for this revision."
-    if verdict == "proposal-ready":
-        return "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
-    if verdict == "inconclusive":
-        return "Request a completed documentation review for this revision."
-    return "Update the developer documentation for this revision, then push a new commit."
-
-
 def project_agent_review(
     context: dict[str, str], source: dict[str, Any], review: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -57,7 +47,8 @@ def project_agent_review(
         return None
     if str(source.get("source_key", "")).strip() != expected_identity["source_key"]:
         return None
-    return service.save_agent_review_run(context, validated)
+    with service.docs_impact_run_lock(context):
+        return service.save_agent_review_run(context, validated)
 
 
 def publish_agent_review(token: str, context: dict[str, str], review: dict[str, Any]) -> dict[str, Any]:
@@ -77,12 +68,19 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
             return {"status": "ignored", "reason": "review_not_projected"}
         if str(record.get("check_run_id", "")).strip():
             return {"status": "duplicate", "check_run_id": str(record["check_run_id"])}
+        if record.get("publication_state") != "ready":
+            return {"status": "publication_pending"}
         try:
             owner, repository = context["repository"].split("/", 1)
         except (KeyError, ValueError):
             return {"status": "ignored", "reason": "repository_invalid"}
-        verdict = validated["verdict"]
-        next_action = _next_action(verdict)
+        record = service.begin_agent_review_publication(context, validated)
+        if not isinstance(record, dict):
+            return {"status": "ignored", "reason": "review_not_projected"}
+        if record.get("publication_state") != "started":
+            return {"status": "publication_pending"}
+        public = record.get("public") if isinstance(record.get("public"), dict) else {}
+        verdict = str(public.get("decision", ""))
         check_run = service.common.create_check_run_with_token(
             token,
             owner,
@@ -93,13 +91,13 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
             "success" if verdict in SUCCESSFUL_REVIEW_VERDICTS else "action_required",
             {
                 "title": f"Documentation impact: {verdict}",
-                "summary": service.public_docs_impact_text(f"{validated['rationale']}\n\nNext action: {next_action}"),
+                "summary": f"{public.get('why', '')}\n\nNext action: {public.get('next_action', '')}",
             },
-            service.common.docs_impact_run_url(
-                context["repository"], context["repository_id"], context["number"], context["head_sha"],
-            ),
+            service.common.docs_impact_run_url(str(record.get("run_locator", ""))),
         )
-        saved = service.save_agent_review_run(context, validated, check_run)
+        saved = service.complete_agent_review_publication(context, validated, check_run)
+        if saved is None:
+            return {"status": "publication_pending"}
         return {"status": "published", "check_run": check_run, "record": saved}
 
 def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, str]) -> dict[str, Any]:

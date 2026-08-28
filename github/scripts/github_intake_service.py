@@ -48,7 +48,7 @@ DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION = 1
 DOCS_IMPACT_AGENT_SKILL = "developer-experience-techdocs"
 DOCS_IMPACT_ASSIGNMENT_LOCK_TIMEOUT_SECONDS = 5.0
 DOCS_IMPACT_ASSIGNMENT_LOCK_RETRY_SECONDS = 0.01
-CITY_IDENTIFIER_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:mc|ga)-[A-Za-z0-9][A-Za-z0-9-]*(?![A-Za-z0-9])", re.IGNORECASE)
+PRIVATE_HYPHENATED_TOKEN_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9][A-Za-z0-9-]*\b")
 
 
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -1014,8 +1014,12 @@ def docs_patch_artifact_path(source_key: str) -> str:
 
 def docs_impact_run_path(context: dict[str, str]) -> str:
     """Return the local record for one immutable PR revision's public run page."""
-    storage_id = common.safe_storage_id(github_pr_source_key(context), "docs-impact-run")
-    return os.path.join(common.data_dir(), "docs-impact-runs", f"{storage_id}.json")
+    return os.path.join(common.data_dir(), "docs-impact-runs", f"{docs_impact_run_locator(context)}.json")
+
+
+def docs_impact_run_locator(context: dict[str, str]) -> str:
+    """Return the non-identifying public handle for one immutable run."""
+    return common.safe_storage_id(github_pr_source_key(context), "docs-impact-run")
 
 
 def docs_impact_assignment_path(context: dict[str, str]) -> str:
@@ -1143,10 +1147,50 @@ def save_docs_impact_run(
     return record
 
 
-def save_agent_review_run(
-    context: dict[str, str], review: dict[str, Any], check_run: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Persist the private, revision-bound review before its GitHub projection."""
+def _docs_impact_next_action(verdict: str) -> str:
+    if verdict in {"no-impact", "docs-sufficient"}:
+        return "No documentation action is required for this revision."
+    if verdict == "proposal-ready":
+        return "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
+    if verdict == "inconclusive":
+        return "Request a completed documentation review for this revision."
+    return "Update the developer documentation for this revision, then push a new commit."
+
+
+def _public_docs_impact_text(value: Any, private_identity: dict[str, Any]) -> str:
+    """Remove this run's private identity values from an allow-listed text field."""
+    text = str(value)
+    private_values = sorted(
+        (str(item) for item in private_identity.values() if isinstance(item, (str, int)) and str(item)),
+        key=len,
+        reverse=True,
+    )
+    for private_value in private_values:
+        text = text.replace(private_value, "[redacted]")
+    return PRIVATE_HYPHENATED_TOKEN_PATTERN.sub("[internal review]", text)
+
+
+def public_agent_review(review: dict[str, Any]) -> dict[str, Any]:
+    """Build the only allow-listed review fields that may reach GitHub."""
+    identity = review["identity"]
+    verdict = str(review["verdict"])
+    public: dict[str, Any] = {
+        "decision": verdict,
+        "why": _public_docs_impact_text(review["rationale"], identity),
+        "next_action": _docs_impact_next_action(verdict),
+        "evidence_paths": [
+            _public_docs_impact_text(item.get("path", ""), identity)
+            for item in review.get("evidence", []) if isinstance(item, dict)
+        ],
+    }
+    proposal = review.get("proposal")
+    if verdict == "proposal-ready" and isinstance(proposal, dict):
+        public["proposal_diff"] = _public_docs_impact_text(proposal.get("diff", ""), identity)
+    return public
+
+
+def save_agent_review_run(context: dict[str, str], review: dict[str, Any]) -> dict[str, Any] | None:
+    """Persist the first canonical review; later distinct reviews cannot replace it."""
     identity = {
         "repository": context["repository"],
         "repository_id": context["repository_id"],
@@ -1154,27 +1198,49 @@ def save_agent_review_run(
         "head_sha": context["head_sha"],
     }
     existing = common.read_json(docs_impact_run_path(context))
-    prior_check_run_id = ""
-    if (
-        check_run is None
-        and isinstance(existing, dict)
-        and existing.get("identity") == identity
-        and existing.get("review") == review
-    ):
-        prior_check_run_id = str(existing.get("check_run_id", ""))
+    if isinstance(existing, dict):
+        if existing.get("schema_version") == 2 and existing.get("identity") == identity and existing.get("review") == review:
+            return existing
+        return None
     record = {
         "schema_version": 2,
         "identity": identity,
         "review": review,
-        "check_run_id": str((check_run or {}).get("id", prior_check_run_id)),
+        "public": public_agent_review(review),
+        "run_locator": docs_impact_run_locator(context),
+        "publication_state": "ready",
+        "check_run_id": "",
     }
     common.atomic_write_json(docs_impact_run_path(context), record)
     return record
 
 
-def public_docs_impact_text(value: Any) -> str:
-    """Prevent internal City work identifiers from reaching GitHub views."""
-    return CITY_IDENTIFIER_PATTERN.sub("[internal review]", str(value))
+def begin_agent_review_publication(context: dict[str, str], review: dict[str, Any]) -> dict[str, Any] | None:
+    """Durably mark a projected review before its sole Check Run POST."""
+    record = load_docs_impact_run(context)
+    if not isinstance(record, dict) or record.get("review") != review:
+        return None
+    if str(record.get("check_run_id", "")).strip() or record.get("publication_state") != "ready":
+        return record
+    record["publication_state"] = "started"
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
+def complete_agent_review_publication(
+    context: dict[str, str], review: dict[str, Any], check_run: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Record the Check Run ID without allowing a competing review to replace it."""
+    record = load_docs_impact_run(context)
+    if not isinstance(record, dict) or record.get("review") != review or record.get("publication_state") != "started":
+        return None
+    check_run_id = str(check_run.get("id", "")).strip()
+    if not check_run_id:
+        return None
+    record["check_run_id"] = check_run_id
+    record["publication_state"] = "published"
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
 
 
 def load_docs_impact_run(context: dict[str, str]) -> dict[str, Any] | None:
@@ -1187,6 +1253,14 @@ def load_docs_impact_run(context: dict[str, str]) -> dict[str, Any] | None:
         "pr_number": context["number"], "head_sha": context["head_sha"],
     }
     return record if identity == expected else None
+
+
+def load_docs_impact_run_locator(locator: str) -> dict[str, Any] | None:
+    """Load a run by its opaque public locator, never by GitHub identity query."""
+    if re.fullmatch(r"docs-impact-run-[0-9a-f]{24}", locator) is None:
+        return None
+    record = common.read_json(os.path.join(common.data_dir(), "docs-impact-runs", f"{locator}.json"))
+    return record if isinstance(record, dict) and record.get("run_locator") == locator else None
 
 
 def create_pull_request_docs_patch_result(
@@ -2377,44 +2451,28 @@ def run_addressed_router(limit: int = 50) -> dict[str, Any]:
     }
 
 
-def docs_impact_run_context(query: str) -> dict[str, str] | None:
-    """Parse a public run URL without allowing it to select an arbitrary file."""
+def docs_impact_run_locator_from_query(query: str) -> str | None:
+    """Parse an opaque public run URL without accepting GitHub identity fields."""
     values = urllib.parse.parse_qs(query, keep_blank_values=True)
-    repository = values.get("repository", [""])[0]
-    repository_id = values.get("repository_id", [""])[0]
-    number = values.get("pr", [""])[0]
-    head_sha = values.get("sha", [""])[0]
-    if (
-        not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
-        or not re.fullmatch(r"[0-9]+", repository_id)
-        or not re.fullmatch(r"[1-9][0-9]*", number)
-        or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
-    ):
+    locator = values.get("run", [""])[0]
+    if set(values) != {"run"} or re.fullmatch(r"docs-impact-run-[0-9a-f]{24}", locator) is None:
         return None
-    return {"repository": repository, "repository_id": repository_id, "number": number, "head_sha": head_sha}
+    return locator
 
 
 def render_docs_impact_run(record: dict[str, Any]) -> str:
     """Render the safe public projection for one immutable docs-impact run."""
-    review = record.get("review") if isinstance(record.get("review"), dict) else {}
-    verdict = str(review.get("verdict", ""))
-    rationale = html.escape(public_docs_impact_text(review.get("rationale", "")))
-    if verdict in {"no-impact", "docs-sufficient"}:
-        next_step = "No documentation action is required for this revision."
-    elif verdict == "proposal-ready":
-        next_step = "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
-    elif verdict == "inconclusive":
-        next_step = "Request a completed documentation review for this revision."
-    else:
-        next_step = "Update the developer documentation for this revision, then push a new commit."
+    public = record.get("public") if isinstance(record.get("public"), dict) else {}
+    verdict = str(public.get("decision", ""))
+    rationale = html.escape(str(public.get("why", "")))
+    next_step = str(public.get("next_action", ""))
     evidence_rows = "".join(
-        f"<li><code>{html.escape(public_docs_impact_text(item.get('path', '')))}</code>: "
-        f"<a href=\"{html.escape(public_docs_impact_text(item.get('evidence', '')), quote=True)}\">evidence</a></li>"
-        for item in review.get("evidence", []) if isinstance(item, dict)
+        f"<li><code>{html.escape(str(path))}</code></li>"
+        for path in public.get("evidence_paths", []) if isinstance(path, str)
     ) or "<li>None</li>"
     proposal = ""
-    if verdict == "proposal-ready" and isinstance(review.get("proposal"), dict):
-        diff = html.escape(public_docs_impact_text(review["proposal"].get("diff", "")))
+    if verdict == "proposal-ready" and isinstance(public.get("proposal_diff"), str):
+        diff = html.escape(public["proposal_diff"])
         proposal = f"<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
     return f"""<!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><title>Documentation impact review</title>
@@ -2549,11 +2607,11 @@ class IntakeHandler(BaseHTTPRequestHandler):
             text_response(self, HTTPStatus.OK, render_admin_home(), "text/html; charset=utf-8")
             return
         if parsed.path == "/v0/github/admin/runs":
-            context = docs_impact_run_context(parsed.query)
-            if context is None:
-                text_response(self, HTTPStatus.BAD_REQUEST, "invalid run identity\n", "text/plain; charset=utf-8")
+            locator = docs_impact_run_locator_from_query(parsed.query)
+            if locator is None:
+                text_response(self, HTTPStatus.BAD_REQUEST, "invalid run locator\n", "text/plain; charset=utf-8")
                 return
-            record = load_docs_impact_run(context)
+            record = load_docs_impact_run_locator(locator)
             if record is None:
                 text_response(self, HTTPStatus.NOT_FOUND, "documentation impact run not found\n", "text/plain; charset=utf-8")
                 return
