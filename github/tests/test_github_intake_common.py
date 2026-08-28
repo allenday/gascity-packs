@@ -52,6 +52,7 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         manifest = common.build_manifest()
 
         self.assertEqual(manifest["url"], "https://admin.example.com")
+        self.assertEqual(common.admin_dashboard_url(), "https://admin.example.com/v0/github/admin")
         self.assertEqual(
             manifest["hook_attributes"]["url"],
             "https://hook.example.com/v0/github/webhook",

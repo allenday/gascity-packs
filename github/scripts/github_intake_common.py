@@ -432,6 +432,12 @@ def admin_url() -> str:
     return published_service_url(ADMIN_SERVICE_NAME)
 
 
+def admin_dashboard_url() -> str:
+    """Return the GitHub intake dashboard route, when the admin service is published."""
+    admin = admin_url()
+    return admin.rstrip("/") + "/v0/github/admin" if admin else ""
+
+
 def webhook_url() -> str:
     """Public webhook base URL: deployment override first, then publication."""
     override = workspace_env_value("GITHUB_INTAKE_WEBHOOK_PUBLIC_URL")
@@ -457,7 +463,7 @@ def build_manifest() -> dict[str, Any]:
         "hook_attributes": {"url": hook_url, "active": True},
         "redirect_url": admin.rstrip("/") + "/v0/github/app/manifest/callback",
         "callback_urls": [admin.rstrip("/") + "/v0/github/app/manifest/callback"],
-        "setup_url": admin.rstrip("/") + "/v0/github/admin",
+        "setup_url": admin_dashboard_url(),
         "description": "Workspace-hosted GitHub comment and event intake for Gas City",
         "public": False,
         "default_permissions": {
@@ -1254,6 +1260,8 @@ def create_check_run_with_token(
         "status": status,
         "output": output,
     }
+    if admin_dashboard_url():
+        payload["details_url"] = admin_dashboard_url()
     if conclusion:
         payload["conclusion"] = conclusion
     return github_api_request(
