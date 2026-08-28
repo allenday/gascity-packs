@@ -1470,7 +1470,9 @@ def github_pr_context(payload: dict[str, Any]) -> dict[str, str]:
         "repository": str(repository.get("full_name", "")).strip().lower(),
         "owner": str(owner.get("login", "")).strip(),
         "repo": str(repository.get("name", "")).strip(),
-        "number": str(pull_request.get("number", "")).strip(),
+        # GitHub's pull_request webhook puts the number at the event's top
+        # level; retain the nested fallback for compact test/replay payloads.
+        "number": str(payload.get("number", pull_request.get("number", ""))).strip(),
         "head_sha": str(head.get("sha", "")).strip(),
         "head_ref": str(head.get("ref", "")).strip(),
         "base_ref": str(base.get("ref", "")).strip(),

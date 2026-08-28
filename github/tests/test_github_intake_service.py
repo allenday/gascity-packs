@@ -108,6 +108,7 @@ class GitHubIntakeServiceTests(unittest.TestCase):
 
     def test_github_pr_source_key_is_bound_to_immutable_head(self) -> None:
         payload = {
+            "number": 42,
             "repository": {
                 "id": 123,
                 "full_name": "Owner/Repo",
@@ -115,7 +116,6 @@ class GitHubIntakeServiceTests(unittest.TestCase):
                 "name": "Repo",
             },
             "pull_request": {
-                "number": 42,
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
                 "base": {"ref": "main"},
