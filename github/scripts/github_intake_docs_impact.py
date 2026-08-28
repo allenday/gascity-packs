@@ -173,16 +173,20 @@ def evaluate(
     source = create_source(payload, delivery_id, context)
     if source.get("status") not in {"created", "duplicate"}:
         raise RuntimeError(f"could not create source bead: {source.get('reason', source.get('status'))}")
+    paths = paths or []
+    run_url = common.docs_impact_run_url(context["repository"], context["repository_id"], context["number"], context["head_sha"])
+    service.save_docs_impact_run(context, source, None, "evaluating", "", paths, None)
     initial = common.create_check_run_with_token(
         token, context["owner"], context["repo"], context["head_sha"], CHECK_NAME, "in_progress", None,
-        check_output("Evaluating docs impact", "Gas City is evaluating this revision.", context, source, []),
+        check_output("Evaluating docs impact", "Gas City is evaluating this revision.", context, source, []), run_url,
     )
     check_id = initial.get("id")
     if not check_id:
         raise RuntimeError("GitHub did not return a check run id")
     projection = project_docs_patch(context, source, artifact)
-    classification, _ = classify_paths(paths or [])
+    classification, _ = classify_paths(paths)
     outcome = projection["outcome"] if projection["outcome"] == "proposed" else classification
+    service.save_docs_impact_run(context, source, projection["artifact"], outcome, projection["reason"], paths, initial)
     completed = common.update_check_run_with_token(
         token, context["owner"], context["repo"], check_id, "completed", conclusion_for(outcome),
         patch_check_output(context, source, projection["artifact"], outcome, projection["reason"], paths),

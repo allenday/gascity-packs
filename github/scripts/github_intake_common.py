@@ -438,6 +438,22 @@ def admin_dashboard_url() -> str:
     return admin.rstrip("/") + "/v0/github/admin" if admin else ""
 
 
+def docs_impact_run_url(repository: str, repository_id: str, number: str, head_sha: str) -> str:
+    """Return the public, revision-bound docs-impact evidence URL."""
+    dashboard = admin_dashboard_url()
+    if not dashboard:
+        return ""
+    query = urllib.parse.urlencode(
+        {
+            "repository": repository,
+            "repository_id": repository_id,
+            "pr": number,
+            "sha": head_sha,
+        }
+    )
+    return dashboard.rstrip("/") + "/runs?" + query
+
+
 def webhook_url() -> str:
     """Public webhook base URL: deployment override first, then publication."""
     override = workspace_env_value("GITHUB_INTAKE_WEBHOOK_PUBLIC_URL")
@@ -1239,9 +1255,10 @@ def create_check_run(
     status: str,
     conclusion: str | None,
     output: dict[str, Any],
+    details_url: str = "",
 ) -> dict[str, Any]:
     token = create_installation_token(app_cfg, installation_id)
-    return create_check_run_with_token(token, owner, repo, head_sha, name, status, conclusion, output)
+    return create_check_run_with_token(token, owner, repo, head_sha, name, status, conclusion, output, details_url)
 
 
 def create_check_run_with_token(
@@ -1253,6 +1270,7 @@ def create_check_run_with_token(
     status: str,
     conclusion: str | None,
     output: dict[str, Any],
+    details_url: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
@@ -1260,7 +1278,9 @@ def create_check_run_with_token(
         "status": status,
         "output": output,
     }
-    if admin_dashboard_url():
+    if details_url:
+        payload["details_url"] = details_url
+    elif admin_dashboard_url():
         payload["details_url"] = admin_dashboard_url()
     if conclusion:
         payload["conclusion"] = conclusion

@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import shlex
 import socketserver
 import subprocess
@@ -1001,6 +1002,48 @@ def github_pr_docs_patch_key(context: dict[str, str], patch_sha256: str) -> str:
 def docs_patch_artifact_path(source_key: str) -> str:
     storage_id = common.safe_storage_id(source_key, "docs-patch")
     return os.path.join(common.data_dir(), "docs-patches", f"{storage_id}.json")
+
+
+def docs_impact_run_path(context: dict[str, str]) -> str:
+    """Return the local record for one immutable PR revision's public run page."""
+    storage_id = common.safe_storage_id(github_pr_source_key(context), "docs-impact-run")
+    return os.path.join(common.data_dir(), "docs-impact-runs", f"{storage_id}.json")
+
+
+def save_docs_impact_run(
+    context: dict[str, str], source: dict[str, Any], artifact: dict[str, Any] | None,
+    outcome: str, reason: str, paths: list[str], check_run: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Persist the sanitized, revision-bound public evidence projection."""
+    record = {
+        "schema_version": 1,
+        "identity": {
+            "repository": context["repository"],
+            "repository_id": context["repository_id"],
+            "pr_number": context["number"],
+            "head_sha": context["head_sha"],
+        },
+        "outcome": outcome,
+        "reason": reason,
+        "changed_paths": [str(path) for path in paths[:100]],
+        "source_bead_id": str(source.get("bead_id", "")),
+        "check_run_id": str((check_run or {}).get("id", "")),
+        "artifact": artifact or None,
+    }
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
+def load_docs_impact_run(context: dict[str, str]) -> dict[str, Any] | None:
+    record = common.read_json(docs_impact_run_path(context))
+    if not isinstance(record, dict):
+        return None
+    identity = record.get("identity")
+    expected = {
+        "repository": context["repository"], "repository_id": context["repository_id"],
+        "pr_number": context["number"], "head_sha": context["head_sha"],
+    }
+    return record if identity == expected else None
 
 
 def create_pull_request_docs_patch_result(
@@ -2191,6 +2234,87 @@ def run_addressed_router(limit: int = 50) -> dict[str, Any]:
     }
 
 
+def docs_impact_run_context(query: str) -> dict[str, str] | None:
+    """Parse a public run URL without allowing it to select an arbitrary file."""
+    values = urllib.parse.parse_qs(query, keep_blank_values=True)
+    repository = values.get("repository", [""])[0]
+    repository_id = values.get("repository_id", [""])[0]
+    number = values.get("pr", [""])[0]
+    head_sha = values.get("sha", [""])[0]
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        or not re.fullmatch(r"[0-9]+", repository_id)
+        or not re.fullmatch(r"[1-9][0-9]*", number)
+        or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
+    ):
+        return None
+    return {"repository": repository, "repository_id": repository_id, "number": number, "head_sha": head_sha}
+
+
+def render_docs_impact_run(record: dict[str, Any]) -> str:
+    """Render the safe public projection for one immutable docs-impact run."""
+    identity = record["identity"]
+    artifact = record.get("artifact") if isinstance(record.get("artifact"), dict) else None
+    outcome = str(record.get("outcome", ""))
+    if outcome == "proposed" and artifact is not None:
+        heading = "Documentation update proposed"
+        next_step = "Review the proposed patch below, apply it to this pull request branch, and push a new commit."
+    elif outcome == "no-impact":
+        heading = "No documentation update needed"
+        next_step = "No documentation action is required for this revision."
+    else:
+        heading = "Documentation review needed"
+        next_step = "Update the developer documentation for this revision, then push a new commit."
+    paths = record.get("changed_paths") if isinstance(record.get("changed_paths"), list) else []
+    changed_paths = "".join(f"<li><code>{html.escape(str(path))}</code></li>" for path in paths) or "<li>None reported</li>"
+    proposal = "<p>No safe documentation patch is available for this revision.</p>"
+    evidence = ""
+    if artifact is not None:
+        files = artifact.get("files") if isinstance(artifact.get("files"), list) else []
+        file_list = "".join(f"<li><code>{html.escape(str(item.get('path', '')))}</code></li>" for item in files if isinstance(item, dict))
+        diff = html.escape(str(artifact.get("diff", "")))
+        proposal = (
+            f"<p>Proposal status: <strong>{html.escape(str(artifact.get('status', '')))}</strong></p>"
+            f"<h2>Proposed documentation files</h2><ul>{file_list or '<li>None</li>'}</ul>"
+            f"<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
+        )
+        claims = artifact.get("claims") if isinstance(artifact.get("claims"), list) else []
+        claim_rows = "".join(
+            f"<li><strong>{html.escape(str(item.get('claim', '')))}</strong><br>"
+            f"<a href=\"{html.escape(str(item.get('evidence', '')), quote=True)}\">evidence</a> — "
+            f"{html.escape(str(item.get('release_scope', '')))}</li>"
+            for item in claims if isinstance(item, dict)
+        )
+        checks = artifact.get("checks") if isinstance(artifact.get("checks"), list) else []
+        check_rows = "".join(
+            f"<li><code>{html.escape(str(item.get('command', '')))}</code>: "
+            f"<strong>{html.escape(str(item.get('status', '')))}</strong> — {html.escape(str(item.get('explanation', '')))}</li>"
+            for item in checks if isinstance(item, dict)
+        )
+        evidence = f"""
+<h2>Evidence</h2>
+<dl>
+  <dt>Artifact integrity digest</dt><dd><code>{html.escape(str(artifact.get('artifact_sha256', '')))}</code></dd>
+  <dt>Patch digest</dt><dd><code>{html.escape(str(artifact.get('patch_sha256', '')))}</code></dd>
+</dl>
+<h3>Claims</h3><ul>{claim_rows or '<li>None</li>'}</ul>
+<h3>Validation</h3><ul>{check_rows or '<li>None</li>'}</ul>
+"""
+    source_bead = html.escape(str(record.get("source_bead_id", "")))
+    return f"""<!doctype html>
+<html lang=\"en\"><head><meta charset=\"utf-8\"><title>{html.escape(heading)}</title>
+<style>body {{ font-family: system-ui, sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }} pre {{ background:#f6f8fa; padding:1rem; overflow:auto; }} code {{ font-family: ui-monospace, monospace; }} dt {{ font-weight:600; margin-top:.5rem; }}</style>
+</head><body>
+<h1>{html.escape(heading)}</h1>
+<p><strong>{html.escape(str(identity['repository']))}#{html.escape(str(identity['pr_number']))}</strong> at <code>{html.escape(str(identity['head_sha']))}</code></p>
+<p>{html.escape(next_step)}</p>
+<h2>Changed paths</h2><ul>{changed_paths}</ul>
+{proposal}
+{evidence}
+<details><summary>Run identity</summary><p>Source evidence: <code>{source_bead or 'unavailable'}</code></p></details>
+</body></html>"""
+
+
 def render_admin_home() -> str:
     snapshot = common.build_status_snapshot(limit=20)
     config = snapshot["config"]
@@ -2309,6 +2433,33 @@ class IntakeHandler(BaseHTTPRequestHandler):
     def _do_admin_get(self, parsed: urllib.parse.ParseResult) -> None:
         if parsed.path == "/":
             text_response(self, HTTPStatus.OK, render_admin_home(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/v0/github/admin/runs":
+            context = docs_impact_run_context(parsed.query)
+            if context is None:
+                text_response(self, HTTPStatus.BAD_REQUEST, "invalid run identity\n", "text/plain; charset=utf-8")
+                return
+            record = load_docs_impact_run(context)
+            if record is None:
+                text_response(self, HTTPStatus.NOT_FOUND, "documentation impact run not found\n", "text/plain; charset=utf-8")
+                return
+            text_response(self, HTTPStatus.OK, render_docs_impact_run(record), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/v0/github/admin/docs-patch":
+            source_key = urllib.parse.parse_qs(parsed.query).get("source_key", [""])[0]
+            if not source_key:
+                text_response(self, HTTPStatus.BAD_REQUEST, "missing source_key\n", "text/plain; charset=utf-8")
+                return
+            try:
+                with open(docs_patch_artifact_path(source_key), encoding="utf-8") as handle:
+                    artifact = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                text_response(self, HTTPStatus.NOT_FOUND, "documentation patch not found\n", "text/plain; charset=utf-8")
+                return
+            diff = html.escape(str(artifact.get("diff", "")))
+            title = html.escape(str(artifact.get("title", "Documentation patch")))
+            body = f"<!doctype html><title>{title}</title><h1>{title}</h1><p>Apply this diff to the pull request branch, then push it for a fresh evaluation.</p><pre><code>{diff}</code></pre>"
+            text_response(self, HTTPStatus.OK, body, "text/html; charset=utf-8")
             return
         if parsed.path == "/v0/github/status":
             json_response(self, HTTPStatus.OK, common.build_status_snapshot(limit=20))
