@@ -327,6 +327,21 @@ class DocsImpactTests(unittest.TestCase):
                 self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
                 self.assertEqual(self.update_check.call_args.args[5], conclusion)
 
+    def test_proposal_ready_check_includes_the_validated_diff_inline(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        source = {"source_key": "github-pr:17:9:" + "a" * 40}
+        review = valid_agent_review(verdict="proposal-ready")
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
+            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
+        ), mock.patch.object(
+            service.common, "create_check_run_with_token", return_value={"id": 81}
+        ) as create_check:
+            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
+            self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
+
+        output = create_check.call_args.args[7]
+        self.assertEqual(output["text"], "## Proposed documentation change\n\n```diff\n" + DIFF + "```")
+
     def test_reprojected_review_does_not_create_a_second_check(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
         source = {"source_key": "github-pr:17:9:" + "a" * 40}

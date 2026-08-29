@@ -14,6 +14,7 @@ import github_intake_service as service
 
 
 SUCCESSFUL_REVIEW_VERDICTS = {"no-impact", "docs-sufficient"}
+MAX_INLINE_PROPOSAL_BYTES = 60 * 1024
 STALE_CHECK_OUTPUT = {
     "title": "Documentation impact: stale revision",
     "summary": "This check was invalidated because the pull request revision could not be confirmed as current.",
@@ -174,6 +175,11 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
             "title": f"Documentation impact: {verdict}",
             "summary": f"{public.get('why', '')}\n\nNext action: {public.get('next_action', '')}",
         }
+        proposal_diff = public.get("proposal_diff")
+        if verdict == "proposal-ready" and isinstance(proposal_diff, str):
+            inline_proposal = f"## Proposed documentation change\n\n```diff\n{proposal_diff}```"
+            if len(inline_proposal.encode("utf-8")) <= MAX_INLINE_PROPOSAL_BYTES:
+                output["text"] = inline_proposal
         if reconcile_remote:
             remote_check = service.common.find_check_run_by_external_id_with_token(
                 token, owner, repository, context["head_sha"], external_id,
