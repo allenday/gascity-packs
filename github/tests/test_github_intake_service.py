@@ -94,6 +94,14 @@ class GitHubIntakeServiceTests(unittest.TestCase):
         self.assertEqual(service.rig_from_target("product/polecat-2"), "product")
         self.assertEqual(service.rig_from_target("polecat"), "")
 
+    def test_direct_bd_mode_avoids_the_gc_supervisor_wrapper(self) -> None:
+        os.environ["GC_GITHUB_INTAKE_DIRECT_BD"] = "1"
+
+        self.assertEqual(
+            service.gc_bd_command("/city", "list", "--json", rig="project"),
+            ["bd", "list", "--json"],
+        )
+
     def test_extract_json_output_accepts_dict_and_list_shapes(self) -> None:
         self.assertEqual(service.extract_json_output('{"id":"bd-1"}')["id"], "bd-1")
         self.assertEqual(service.extract_json_output('[{"id":"bd-2"}]')["id"], "bd-2")

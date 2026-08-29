@@ -152,6 +152,11 @@ def rig_from_target(target: str) -> str:
 
 
 def gc_bd_command(city_root: str, *args: str, rig: str = "") -> list[str]:
+    # The trusted Compose intake can share City's namespace and use the pinned
+    # Beads client directly.  Routing that client back through `gc bd` makes a
+    # second supervisor attempt recovery against the already-managed store.
+    if os.environ.get("GC_GITHUB_INTAKE_DIRECT_BD", "").strip() == "1":
+        return [os.environ.get("BD_BIN", "bd"), *args]
     command = [os.environ.get("GC_BIN", "gc")]
     if city_root not in {"", "."}:
         command.extend(["--city", city_root])

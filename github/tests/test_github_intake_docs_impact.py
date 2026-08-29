@@ -450,6 +450,7 @@ class DocsImpactTests(unittest.TestCase):
             self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
 
         args = create_check.call_args.args
+        self.assertEqual(args[4], "Gas City / docs-impact")
         self.assertNotIn(source_key, args[7]["summary"])
         self.assertNotIn(head_sha, args[7]["summary"])
         self.assertNotIn("17", args[7]["summary"])
