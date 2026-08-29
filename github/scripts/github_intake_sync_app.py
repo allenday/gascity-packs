@@ -26,8 +26,18 @@ def main() -> int:
         print(f"gc github sync-app: {exc}", file=sys.stderr)
         return 1
     if outcome.get("status") == "skipped":
-        print(f"gc github sync-app: {outcome.get('reason', 'sync skipped')}", file=sys.stderr)
-        return 1
+        # The cooldown order is installed with the generic GitHub pack, while
+        # identity-resolver onboarding is optional. Treat an absent identity as
+        # a successful no-op so manually configured App deployments do not
+        # emit a periodic controller failure. Resolver/configuration failures
+        # still arrive through the exception path above.
+        if args.quiet:
+            return 0
+        if args.json_output:
+            print(json.dumps(outcome, indent=2, sort_keys=True))
+            return 0
+        print(f"status: skipped ({outcome.get('reason', 'sync skipped')})")
+        return 0
     if args.quiet:
         return 0
     if args.json_output:
