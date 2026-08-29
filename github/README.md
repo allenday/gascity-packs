@@ -25,6 +25,62 @@ The current slice ships:
 - `/gc fix` routing into the workflows-pack `mol-bug-report-flow-v2` pipeline
 - issue-only `/gc fix` routing for this phase; other `/gc` commands are intentionally ignored
 
+## Pull-request documentation impact (patch-first)
+
+For configured `pull_request` events, the credentialed docs-impact rule records
+immutable source evidence for the exact PR head SHA and queues a revision-bound
+City TechDocs assignment. The rule waits up to
+`GC_GITHUB_DOCS_REVIEW_WAIT_SECONDS` (900 seconds in the Compose profile) for
+the isolated worker's candidate. It verifies the envelope against the exact
+assignment bytes, matches the review identity and requested skill, and only
+then projects and publishes the `Gas City / docs-impact` Check Run. Neither the
+worker nor the check writes to the PR branch or opens a pull request.
+
+The trusted intake supervisor validates and persists the first accepted review
+for a revision. `no-impact` and `docs-sufficient` are successful conclusions;
+`docs-change-required`, `proposal-ready`, and `inconclusive` require action. A
+`proposal-ready` review may carry a bounded, evidence-backed documentation diff.
+
+The trusted City runtime scans the sanitized assignment inbox, validates and
+copies each assignment to an immutable SHA-256-addressed input, creates one
+digest-labeled review bead, and slings it to `github.docs-impact-reviewer`.
+Compose fixes that Codex agent to `gpt-5.6-terra` with medium reasoning. It uses
+the City's existing ephemeral `CODEX_HOME`; Codex auth is never mounted into a
+GitHub service, evidence worker, model gateway, or other sidecar. The agent has
+no GitHub authority and writes only a digest-bearing raw review candidate.
+
+The untrusted worker receives only the same sanitized, revision-bound assignment and
+the vendored `developer-experience-techdocs` skill. It has no GitHub or git
+credentials, City/config mount, writable supervisor state, or network access.
+A new PR head SHA creates a new source identity and is evaluated independently;
+it never inherits an earlier result.
+
+The worker's public adapter contract is deliberately runtime-neutral:
+
+- `GC_TECHDOCS_ADAPTER_COMMAND` is split into an argument vector and executed
+  directly, without a shell. The worker appends `--skill-dir <path>`.
+- The adapter reads one canonical assignment JSON document from standard input
+  and, on successful completion, writes exactly one
+  `github-pr-docs-impact-review` JSON document to standard output.
+- The worker supplies a scrubbed process environment, enforces
+  `GC_TECHDOCS_ADAPTER_TIMEOUT_SECONDS`, validates the review and its exact
+  assignment identity, and only then writes a canonical candidate to the
+  isolated artifact outbox.
+
+The networkless worker is validator-only for this deployment: it validates the
+City agent's candidate envelope and exact assignment digest, then writes the
+private envelope that the trusted supervisor alone can project and publish.
+If the reviewer is missing, times out, exits unsuccessfully, or returns an
+invalid or mismatched review, the worker removes any stale candidate and no
+artifact or GitHub check is published.
+
+The legacy generic adapter command remains available for isolated tests. If it is unset, missing,
+times out, exits unsuccessfully, or returns an invalid or mismatched review,
+the worker removes any stale candidate and writes no artifact. Consequently
+the trusted rule cannot project a verdict and no GitHub check is published. A
+candidate that arrives after the configured wait window remains unpublished
+until a matching event processes that revision again.
+
 The `/gc fix` path posts a queued-in-bugflow acknowledgement after the bugflow
 source bead and router scan succeed. Bugflow snapshots the issue and comments,
 then owns investigation, classification, implementation gates, PR review, CI,

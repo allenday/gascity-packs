@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import multiprocessing
 import urllib.parse
 import pathlib
 import tempfile
+import threading
 import unittest
 
 import os
@@ -22,6 +24,30 @@ import github_intake_service as service
 # inside a city, and pass in CI only because CI has not installed gc yet at the
 # step that runs them. Each setUp pins the fallback rather than depending on the
 # variable's absence.
+
+
+def queue_agent_review_in_process(
+    state_root: str, start: multiprocessing.synchronize.Barrier,
+    simultaneous_reads: multiprocessing.synchronize.Barrier, results: multiprocessing.queues.Queue,
+) -> None:
+    os.environ["GC_SERVICE_STATE_ROOT"] = state_root
+    read_json = service.common.read_json
+
+    def synchronized_read(*args: object, **kwargs: object) -> object:
+        try:
+            simultaneous_reads.wait(timeout=2)
+        except threading.BrokenBarrierError:
+            pass
+        return read_json(*args, **kwargs)
+
+    service.common.read_json = synchronized_read
+    start.wait(timeout=2)
+    result = service.queue_agent_review(
+        {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40},
+        {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40},
+        ["src/cli.py"],
+    )
+    results.put(result["status"])
 
 
 class DummyWebhookHandler:
@@ -68,6 +94,14 @@ class GitHubIntakeServiceTests(unittest.TestCase):
         self.assertEqual(service.rig_from_target("product/polecat-2"), "product")
         self.assertEqual(service.rig_from_target("polecat"), "")
 
+    def test_direct_bd_mode_avoids_the_gc_supervisor_wrapper(self) -> None:
+        os.environ["GC_GITHUB_INTAKE_DIRECT_BD"] = "1"
+
+        self.assertEqual(
+            service.gc_bd_command("/city", "list", "--json", rig="project"),
+            ["bd", "list", "--json"],
+        )
+
     def test_extract_json_output_accepts_dict_and_list_shapes(self) -> None:
         self.assertEqual(service.extract_json_output('{"id":"bd-1"}')["id"], "bd-1")
         self.assertEqual(service.extract_json_output('[{"id":"bd-2"}]')["id"], "bd-2")
@@ -88,6 +122,8 @@ class GitHubIntakeServiceTests(unittest.TestCase):
                 "number": 42,
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
+                "base": {"ref": "main"},
+                "head": {"ref": "docs-impact", "sha": "a" * 40},
             },
             "sender": {"login": "alice"},
         }
@@ -98,10 +134,41 @@ class GitHubIntakeServiceTests(unittest.TestCase):
         self.assertEqual(env["GC_GITHUB_REPO"], "owner/repo")
         self.assertEqual(env["GC_GITHUB_PR_NUMBER"], "42")
         self.assertEqual(env["GC_GITHUB_PR_URL"], "https://github.com/owner/repo/pull/42")
+        self.assertEqual(env["GC_GITHUB_PR_HEAD_SHA"], "a" * 40)
         self.assertEqual(env["GC_GITHUB_LABEL_NAME"], "status/needs-review")
         self.assertEqual(env["GC_GITHUB_ITEM_KIND"], "pr")
         self.assertEqual(env["GC_GITHUB_ITEM_NUMBER"], "42")
         self.assertEqual(env["GC_GITHUB_EVENT_PAYLOAD_FILE"], "/tmp/payload.json")
+
+    def test_github_pr_source_key_is_bound_to_immutable_head(self) -> None:
+        payload = {
+            "number": 42,
+            "repository": {
+                "id": 123,
+                "full_name": "Owner/Repo",
+                "owner": {"login": "Owner"},
+                "name": "Repo",
+            },
+            "pull_request": {
+                "html_url": "https://github.com/owner/repo/pull/42",
+                "state": "open",
+                "base": {"ref": "main"},
+                "head": {"ref": "docs-impact", "sha": "a" * 40},
+            },
+        }
+
+        context = service.github_pr_context(payload)
+
+        self.assertEqual(context["repository_id"], "123")
+        self.assertEqual(context["head_sha"], "a" * 40)
+        self.assertEqual(
+            service.github_pr_source_key(context),
+            "github-pr:123:42:" + "a" * 40,
+        )
+
+    def test_service_bind_config_allows_explicit_container_tcp_listener(self) -> None:
+        with mock.patch.dict(os.environ, {"GC_SERVICE_SOCKET": "", "GC_SERVICE_HOST": "0.0.0.0", "GC_SERVICE_PORT": "8080"}):
+            self.assertEqual(service.service_bind_config(), ("tcp", "0.0.0.0", 8080))
 
     def test_github_event_env_includes_issue_context(self) -> None:
         payload = {
@@ -790,6 +857,136 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(metadata["addressed.github_app_identity"], "mayor")
         self.assertEqual(metadata["addressed.github_app_installation_id"], "profile-installation")
         self.assertEqual(metadata["addressed.ack_requested"], "false")
+
+    def test_create_pull_request_source_is_not_an_addressed_message(self) -> None:
+        list_result = mock.Mock(returncode=0, stdout="[]", stderr="")
+        create_result = mock.Mock(returncode=0, stdout='{"id":"ga-pr-source"}', stderr="")
+        with mock.patch.object(service, "run_subprocess", side_effect=[list_result, create_result]) as run_subprocess:
+            outcome = service.create_pull_request_source(
+                {
+                    "source_key": "github-pr:17:9:" + "a" * 40,
+                    "repository_full_name": "allenday/demo",
+                    "repository_id": "17",
+                    "pr_number": "9",
+                    "head_sha": "a" * 40,
+                    "pr_url": "https://github.com/allenday/demo/pull/9",
+                }
+            )
+
+        self.assertEqual(outcome["status"], "created")
+        command = run_subprocess.call_args_list[1].args[0]
+        self.assertIn("github-intake,pull-request,docs-impact", command)
+        metadata = json.loads(command[command.index("--metadata") + 1])
+        self.assertEqual(metadata["external.kind"], "pull-request-docs-impact")
+        self.assertEqual(metadata["github.head_sha"], "a" * 40)
+
+    def test_queue_agent_review_writes_one_revision_bound_assignment_per_source_key(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
+
+        created = service.queue_agent_review(context, source, ["src/cli.py", "docs/guide.md"])
+        duplicate = service.queue_agent_review(context, source, ["src/cli.py", "docs/guide.md"])
+        next_revision = service.queue_agent_review(
+            {**context, "head_sha": "b" * 40}, {"bead_id": "ga-next", "source_key": "github-pr:17:9:" + "b" * 40}, ["src/cli.py"]
+        )
+
+        self.assertEqual(created["status"], "queued")
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(created["assignment"]["kind"], "github-pr-docs-impact-assignment")
+        self.assertEqual(created["assignment"]["identity"], {
+            "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+            "head_sha": "a" * 40, "source_key": "github-pr:17:9:" + "a" * 40,
+        })
+        self.assertEqual(created["assignment"]["agent_skill"], "developer-experience-techdocs")
+        self.assertEqual([item["path"] for item in created["assignment"]["evidence_bundle"]["files"]], ["docs/guide.md", "src/cli.py"])
+        self.assertEqual(service.common.read_json(created["assignment_path"]), created["assignment"])
+        self.assertNotEqual(created["assignment_path"], next_revision["assignment_path"])
+
+    def test_queue_agent_review_repairs_incomplete_persisted_assignment(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
+        assignment_path = service.docs_impact_assignment_path(context)
+        service.common.atomic_write_json(assignment_path, {
+            "schema_version": True,
+            "kind": "github-pr-docs-impact-assignment",
+            "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+                         "head_sha": "a" * 40, "source_key": source["source_key"]},
+            "agent_skill": "developer-experience-techdocs",
+            "evidence_bundle": {"head_sha": "a" * 40, "files": [{"path": "src/cli.py", "reference": "github://allenday/demo/blob/" + "a" * 40 + "/src/cli.py", "patch": "Evidence content unavailable."}]},
+        })
+
+        result = service.queue_agent_review(context, source, ["src/cli.py"])
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["assignment"], {
+            "schema_version": 1,
+            "kind": "github-pr-docs-impact-assignment",
+            "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+                         "head_sha": "a" * 40, "source_key": source["source_key"]},
+            "agent_skill": "developer-experience-techdocs",
+            "evidence_bundle": {"head_sha": "a" * 40, "files": [{"path": "src/cli.py", "reference": "github://allenday/demo/blob/" + "a" * 40 + "/src/cli.py", "patch": "Evidence content unavailable."}]},
+        })
+        self.assertEqual(service.common.read_json(assignment_path), result["assignment"])
+
+    def test_queue_agent_review_serializes_concurrent_duplicate_deliveries(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
+        worker_count = 8
+        start = threading.Barrier(worker_count)
+        simultaneous_reads = threading.Barrier(worker_count)
+        read_json = service.common.read_json
+
+        def synchronized_read(*args: object, **kwargs: object) -> object:
+            try:
+                simultaneous_reads.wait(timeout=2)
+            except threading.BrokenBarrierError:
+                pass
+            return read_json(*args, **kwargs)
+
+        def queue() -> dict[str, object]:
+            start.wait(timeout=2)
+            return service.queue_agent_review(context, source, ["src/cli.py"])
+
+        with mock.patch.object(service.common, "read_json", side_effect=synchronized_read):
+            results: list[dict[str, object]] = []
+            result_lock = threading.Lock()
+
+            def collect() -> None:
+                result = queue()
+                with result_lock:
+                    results.append(result)
+
+            threads = [threading.Thread(target=collect) for _ in range(worker_count)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(len(results), worker_count)
+        self.assertEqual(sum(result["status"] == "queued" for result in results), 1)
+        self.assertEqual(sum(result["status"] == "duplicate" for result in results), worker_count - 1)
+
+    def test_queue_agent_review_serializes_duplicate_deliveries_across_processes(self) -> None:
+        process_context = multiprocessing.get_context("fork")
+        start = process_context.Barrier(2)
+        simultaneous_reads = process_context.Barrier(2)
+        results = process_context.Queue()
+        processes = [
+            process_context.Process(
+                target=queue_agent_review_in_process,
+                args=(self.tempdir.name, start, simultaneous_reads, results),
+            )
+            for _ in range(2)
+        ]
+
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=5)
+
+        self.assertEqual([process.exitcode for process in processes], [0, 0])
+        statuses = sorted(results.get(timeout=1) for _ in processes)
+        self.assertEqual(statuses, ["duplicate", "queued"])
 
     def test_addressed_route_target_derives_from_github_repo_at_dispatch_time(self) -> None:
         with mock.patch.object(
@@ -1723,6 +1920,68 @@ class RenderAdminHomeTests(unittest.TestCase):
 
         self.assertNotIn('id="org-name"', page)
         self.assertIn("published admin and webhook URLs are required", page)
+
+
+class DocsImpactRunPageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self._old_environ = os.environ.copy()
+        os.environ["GC_SERVICE_STATE_ROOT"] = self.tempdir.name
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._old_environ)
+
+    def test_run_page_hides_city_identifier_and_collapses_evidence(self) -> None:
+        head_sha = "a" * 40
+        source_key = "github-pr:17:9:" + head_sha
+        upper_sha = head_sha.upper()
+        unrelated_sha = "b" * 40
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": head_sha}
+        record = service.save_agent_review_run(context, {
+            "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": 9, "head_sha": head_sha, "source_key": source_key},
+            "verdict": "proposal-ready",
+            "rationale": f"City record mc-private cites {source_key}, {upper_sha}, and {unrelated_sha}.",
+            "evidence": [{"path": "docs/" + unrelated_sha + ".md", "evidence": "github://allenday/demo/blob/" + head_sha + "/" + source_key}],
+            "proposal": {"diff": "diff --git a/docs/guide.md b/docs/guide.md\n+" + source_key + "\n" + upper_sha + "\n" + unrelated_sha + "\n"},
+        })
+
+        page = service.render_docs_impact_run(record)
+
+        self.assertIn("Decision", page)
+        self.assertIn("Why", page)
+        self.assertIn("Next action", page)
+        self.assertIn("<details><summary>Evidence", page)
+        self.assertNotIn("mc-", page)
+        self.assertNotIn(source_key, page)
+        self.assertNotIn(head_sha, page)
+        self.assertNotIn(upper_sha, page)
+        self.assertNotIn(unrelated_sha, page)
+        self.assertNotIn("repository_id", page)
+        self.assertNotIn("github://", page)
+
+    def test_run_page_loads_by_opaque_locator_only(self) -> None:
+        context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
+        service.save_agent_review_run(context, {
+            "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": 9,
+                         "head_sha": "a" * 40, "source_key": "github-pr:17:9:" + "a" * 40},
+            "verdict": "docs-sufficient", "rationale": "The documentation is adequate.",
+            "evidence": [{"path": "docs/guide.md", "evidence": "git:" + "a" * 40}], "proposal": None,
+        })
+        handler = DummyWebhookHandler(b"", {})
+        service.IntakeHandler._do_admin_get(
+            handler,
+            urllib.parse.urlparse("/v0/github/admin/runs?run=" + service.docs_impact_run_locator(context)),
+        )
+
+        self.assertEqual(handler.status, 200)
+        self.assertIn("Documentation impact review", handler.wfile.getvalue().decode("utf-8"))
+
+    def test_run_page_rejects_missing_or_mismatched_revision_identity(self) -> None:
+        handler = DummyWebhookHandler(b"", {})
+        service.IntakeHandler._do_admin_get(handler, urllib.parse.urlparse("/v0/github/admin/runs?repository=allenday/demo&pr=9"))
+        self.assertEqual(handler.status, 400)
 
 
 

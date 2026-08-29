@@ -7,6 +7,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import sys
 
@@ -51,6 +52,7 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         manifest = common.build_manifest()
 
         self.assertEqual(manifest["url"], "https://admin.example.com")
+        self.assertEqual(common.admin_dashboard_url(), "https://admin.example.com/v0/github/admin")
         self.assertEqual(
             manifest["hook_attributes"]["url"],
             "https://hook.example.com/v0/github/webhook",
@@ -59,11 +61,16 @@ class GitHubIntakeCommonTests(unittest.TestCase):
             manifest["redirect_url"],
             "https://admin.example.com/v0/github/app/manifest/callback",
         )
+        self.assertEqual(
+            manifest["setup_url"],
+            "https://admin.example.com/v0/github/admin",
+        )
         self.assertIn("issue_comment", manifest["default_events"])
         self.assertIn("issues", manifest["default_events"])
         self.assertIn("pull_request", manifest["default_events"])
         self.assertEqual(manifest["default_permissions"]["contents"], "write")
         self.assertEqual(manifest["default_permissions"]["pull_requests"], "write")
+        self.assertEqual(manifest["default_permissions"]["checks"], "write")
 
     def test_effective_config_merges_github_app_env_secrets(self) -> None:
         os.environ["GITHUB_APP_ID"] = "123"
@@ -90,6 +97,114 @@ class GitHubIntakeCommonTests(unittest.TestCase):
 
         self.assertEqual(config["app"]["app_id"], "123")
         self.assertEqual(config["app"]["installation_id"], "456")
+
+    @mock.patch.object(common, "github_api_request")
+    @mock.patch.object(common, "create_installation_token", return_value="installation-token")
+    def test_create_check_run_is_bound_to_exact_head_sha(self, create_token: mock.Mock, request: mock.Mock) -> None:
+        request.return_value = {"id": 9, "head_sha": "a" * 40}
+
+        result = common.create_check_run(
+            {"app_id": "7"},
+            "55",
+            "allenday",
+            "repo",
+            "a" * 40,
+            "Gas City / docs-impact",
+            "in_progress",
+            None,
+            {"title": "Evaluating docs impact", "summary": "source bead ga-1"},
+        )
+
+        self.assertEqual(result["id"], 9)
+        create_token.assert_called_once_with({"app_id": "7"}, "55")
+        self.assertEqual(request.call_args.args[:2], ("POST", "/repos/allenday/repo/check-runs"))
+        self.assertEqual(request.call_args.kwargs["payload"]["head_sha"], "a" * 40)
+        self.assertEqual(request.call_args.kwargs["payload"]["status"], "in_progress")
+        self.assertNotIn("conclusion", request.call_args.kwargs["payload"])
+
+    @mock.patch.object(common, "github_api_request")
+    def test_compare_commits_uses_exact_base_and_head_sha_endpoint(self, request: mock.Mock) -> None:
+        files = [{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new"}]
+        request.return_value = {"files": files}
+
+        result = common.compare_commits_with_token(
+            "installation-token", "allenday", "repo", "b" * 40, "a" * 40,
+        )
+
+        self.assertEqual(result, files)
+        request.assert_called_once_with(
+            "GET",
+            "/repos/allenday/repo/compare/" + "b" * 40 + "..." + "a" * 40 + "?per_page=100&page=1",
+            bearer_token="installation-token",
+        )
+
+    @mock.patch.object(common, "github_api_request")
+    def test_docs_impact_check_links_to_an_opaque_run_locator(self, request: mock.Mock) -> None:
+        request.return_value = {"id": 9}
+        os.environ["GITHUB_INTAKE_ADMIN_PUBLIC_URL"] = "https://city.example"
+
+        common.create_check_run_with_token(
+            "installation-token", "allenday", "repo", "a" * 40, "Gas City / docs-impact", "in_progress", None,
+            {"title": "Evaluating", "summary": "Working."},
+            details_url=common.docs_impact_run_url("docs-impact-run-0123456789abcdef01234567"),
+        )
+
+        self.assertEqual(
+            request.call_args.kwargs["payload"]["details_url"],
+            "https://city.example/v0/github/admin/runs?run=docs-impact-run-0123456789abcdef01234567",
+        )
+
+    @mock.patch.object(common, "github_api_request")
+    def test_check_reconciliation_rejects_missing_or_malformed_pages(self, request: mock.Mock) -> None:
+        for response in ({}, {"total_count": "1", "check_runs": []}, {"total_count": 1, "check_runs": {}}):
+            with self.subTest(response=response):
+                request.return_value = response
+                with self.assertRaises(common.GitHubAPIError):
+                    common.find_check_run_by_external_id_with_token("token", "allenday", "repo", "a" * 40, "run-1")
+
+    @mock.patch.object(common, "github_api_request")
+    def test_check_reconciliation_finds_a_later_page_match(self, request: mock.Mock) -> None:
+        external_id = "docs-impact:run-1"
+        request.side_effect = [
+            {"total_count": 101, "check_runs": [{"id": index, "external_id": "other"} for index in range(100)]},
+            {"total_count": 101, "check_runs": [{"id": 101, "external_id": external_id}]},
+        ]
+
+        found = common.find_check_run_by_external_id_with_token("token", "allenday", "repo", "a" * 40, external_id)
+
+        self.assertEqual(found, {"id": 101, "external_id": external_id})
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("page=2", request.call_args.args[1])
+
+    @mock.patch.object(common, "github_api_request")
+    def test_check_reconciliation_confirms_absence_after_all_pages(self, request: mock.Mock) -> None:
+        request.side_effect = [
+            {"total_count": 101, "check_runs": [{"id": index, "external_id": "other"} for index in range(100)]},
+            {"total_count": 101, "check_runs": [{"id": 101, "external_id": "other"}]},
+        ]
+
+        found = common.find_check_run_by_external_id_with_token("token", "allenday", "repo", "a" * 40, "run-1")
+
+        self.assertIsNone(found)
+        self.assertEqual(request.call_count, 2)
+
+    @mock.patch.object(common, "github_api_request")
+    def test_update_check_run_completes_the_created_check(self, request: mock.Mock) -> None:
+        request.return_value = {"id": 9, "conclusion": "action_required"}
+
+        common.update_check_run_with_token(
+            "installation-token",
+            "allenday",
+            "repo",
+            9,
+            "completed",
+            "action_required",
+            {"title": "needs-human-decision", "summary": "review needed"},
+        )
+
+        self.assertEqual(request.call_args.args[:2], ("PATCH", "/repos/allenday/repo/check-runs/9"))
+        self.assertEqual(request.call_args.kwargs["payload"]["status"], "completed")
+        self.assertEqual(request.call_args.kwargs["payload"]["conclusion"], "action_required")
 
     def test_load_rules_reads_city_owned_toml_and_flattens_match(self) -> None:
         rules_dir = pathlib.Path(self.tempdir.name) / "config" / "github-intake"

@@ -1,0 +1,5 @@
+description = "Trusted City reviewer for sanitized exact-SHA pull-request documentation evidence"
+scope = "city"
+provider = "codex-docs-impact"
+work_dir = "/var/lib/github-docs-impact"
+max_active_sessions = 1
