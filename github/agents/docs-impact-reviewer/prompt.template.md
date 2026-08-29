@@ -24,12 +24,18 @@ Write one JSON document atomically to the candidate path from the bead. Its
 exact outer shape is:
 
 ```json
-{"schema_version":1,"snapshot_sha256":"<digest from bead>","artifact":{"schema_version":1,"kind":"github-pr-docs-impact-review","identity":"<copy the complete assignment identity object>","agent_skill":"developer-experience-techdocs","verdict":"<no-impact|docs-sufficient|docs-change-required|inconclusive>","rationale":"<concise evidence-grounded rationale>","evidence":[{"path":"<an assignment file path>","evidence":"<that file's immutable github:// reference>"}],"confidence":0.0,"proposal":null}}
+{"schema_version":1,"snapshot_sha256":"<digest from bead>","artifact":{"schema_version":1,"kind":"github-pr-docs-impact-review","identity":"<copy the complete assignment identity object>","agent_skill":"developer-experience-techdocs","verdict":"<no-impact|docs-sufficient|docs-change-required|proposal-ready|inconclusive>","rationale":"<concise evidence-grounded rationale>","evidence":[{"path":"<an assignment file path>","evidence":"<that file's immutable github:// reference>"}],"confidence":0.0,"proposal":"<null, or a strict proposed patch artifact>"}}
 ```
 
 `confidence` must be between 0 and 1. Evidence entries may cite only paths and
-immutable references present in the assignment. This route does not create a
-proposal. Write to a temporary file in the candidate directory, validate it
+immutable references present in the assignment. A proposal is allowed only when
+the assignment alone supports a small, safe unified diff that changes only
+documentation paths. In that case set `verdict` to `proposal-ready`, use the
+complete assignment identity in the proposal, and supply a `status: proposed`
+artifact with RFC3339 `generated_at`, `patch_sha256`, documentation-only `diff`,
+matching `files` SHA-256 entries, immutable-evidence `claims`, and at least one
+`checks` entry. Otherwise use `proposal: null`; never invent source facts or
+modify non-documentation files. Write to a temporary file in the candidate directory, validate it
 with `python3 -m json.tool`, `chmod 0600`, then rename it over the candidate
 path. Do not write an artifact when evidence validation or either digest check
 fails. Record `gc.outcome=pass` plus the review verdict on the claimed bead and
