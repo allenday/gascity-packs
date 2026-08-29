@@ -327,7 +327,7 @@ class DocsImpactTests(unittest.TestCase):
                 self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
                 self.assertEqual(self.update_check.call_args.args[5], conclusion)
 
-    def test_proposal_ready_check_includes_the_validated_diff_inline(self) -> None:
+    def test_proposal_ready_check_links_to_the_review_surface_without_inline_diff(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
         source = {"source_key": "github-pr:17:9:" + "a" * 40}
         review = valid_agent_review(verdict="proposal-ready")
@@ -340,7 +340,8 @@ class DocsImpactTests(unittest.TestCase):
             self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
 
         output = create_check.call_args.args[7]
-        self.assertEqual(output["text"], "## Proposed documentation change\n\n```diff\n" + DIFF + "```")
+        self.assertNotIn("text", output)
+        self.assertIn("Documentation proposal available", output["summary"])
 
     def test_reprojected_review_does_not_create_a_second_check(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
