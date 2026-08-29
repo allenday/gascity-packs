@@ -30,7 +30,7 @@ The current slice ships:
 For configured `pull_request` events, the credentialed docs-impact rule records
 immutable source evidence for the exact PR head SHA and queues a revision-bound
 City TechDocs assignment. The rule waits up to
-`GC_GITHUB_DOCS_REVIEW_WAIT_SECONDS` (305 seconds in the Compose profile) for
+`GC_GITHUB_DOCS_REVIEW_WAIT_SECONDS` (900 seconds in the Compose profile) for
 the isolated worker's candidate. It verifies the envelope against the exact
 assignment bytes, matches the review identity and requested skill, and only
 then projects and publishes the `Gas City / docs-impact` Check Run. Neither the
