@@ -1857,6 +1857,7 @@ def github_pr_context(payload: dict[str, Any]) -> dict[str, str]:
     pull_request = payload.get("pull_request") or {}
     head = pull_request.get("head") or {}
     base = pull_request.get("base") or {}
+    head_repository = head.get("repo") or {}
     values = {
         "repository_id": str(repository.get("id", "")).strip(),
         "repository": str(repository.get("full_name", "")).strip().lower(),
@@ -1868,6 +1869,8 @@ def github_pr_context(payload: dict[str, Any]) -> dict[str, str]:
         "head_sha": str(head.get("sha", "")).strip(),
         "base_sha": str(base.get("sha", "")).strip(),
         "head_ref": str(head.get("ref", "")).strip(),
+        "head_repository_id": str(head_repository.get("id", "")).strip(),
+        "head_repository": str(head_repository.get("full_name", "")).strip().lower(),
         "base_ref": str(base.get("ref", "")).strip(),
         "url": str(pull_request.get("html_url", "")).strip(),
     }
