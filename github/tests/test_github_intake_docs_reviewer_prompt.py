@@ -15,6 +15,7 @@ class DocsReviewerPromptTests(unittest.TestCase):
 
         self.assertIn("proposal-ready", prompt)
         self.assertIn("A proposal is allowed only", prompt)
+        self.assertIn("complete removed documentation text", prompt)
         self.assertNotIn("This route does not create a\nproposal.", prompt)
 
 

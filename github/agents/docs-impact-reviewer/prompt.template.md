@@ -34,8 +34,11 @@ documentation paths. In that case set `verdict` to `proposal-ready`, use the
 complete assignment identity in the proposal, and supply a `status: proposed`
 artifact with RFC3339 `generated_at`, `patch_sha256`, documentation-only `diff`,
 matching `files` SHA-256 entries, immutable-evidence `claims`, and at least one
-`checks` entry. Otherwise use `proposal: null`; never invent source facts or
-modify non-documentation files. Write to a temporary file in the candidate directory, validate it
+`checks` entry. When the evidence contains complete removed documentation text,
+prefer a `proposal-ready` restoration that adds back only that exact text; its
+diff is supported without guessing any source fact. Otherwise use
+`proposal: null`; never invent source facts or modify non-documentation files.
+Write to a temporary file in the candidate directory, validate it
 with `python3 -m json.tool`, `chmod 0600`, then rename it over the candidate
 path. Do not write an artifact when evidence validation or either digest check
 fails. Record `gc.outcome=pass` plus the review verdict on the claimed bead and
