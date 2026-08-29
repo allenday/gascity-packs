@@ -20,6 +20,25 @@ STALE_CHECK_OUTPUT = {
 }
 
 
+def followup_pr_plan(context: dict[str, str], review: dict[str, Any]) -> dict[str, str] | None:
+    """Authorize a bot follow-up only for a same-repository PR branch."""
+    proposal = review.get("proposal") if isinstance(review, dict) else None
+    if (
+        not isinstance(proposal, dict)
+        or review.get("verdict") != "proposal-ready"
+        or context.get("head_repository_id") != context.get("repository_id")
+        or context.get("head_repository") != context.get("repository")
+        or not context.get("head_ref")
+    ):
+        return None
+    return {
+        "repository": context["repository"],
+        "base": context["head_ref"],
+        "head_sha": context["head_sha"],
+        "patch_sha256": str(proposal.get("patch_sha256", "")),
+    }
+
+
 def _review_identity(context: dict[str, str]) -> dict[str, Any] | None:
     """Return the one agent-review identity a PR revision may authorize."""
     try:

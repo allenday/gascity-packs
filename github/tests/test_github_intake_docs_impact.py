@@ -66,6 +66,12 @@ def valid_agent_review(head_sha: str = "a" * 40, verdict: str = "docs-sufficient
 
 
 class DocsImpactTests(unittest.TestCase):
+    def test_followup_pr_plan_is_limited_to_same_repository_heads(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "head_repository_id": "17", "head_repository": "allenday/demo", "head_ref": "feature", "head_sha": "a" * 40}
+        plan = docs_impact.followup_pr_plan(context, valid_agent_review(verdict="proposal-ready"))
+        self.assertEqual(plan["base"], "feature")
+        context["head_repository_id"] = "18"
+        self.assertIsNone(docs_impact.followup_pr_plan(context, valid_agent_review(verdict="proposal-ready")))
     def setUp(self) -> None:
         self.remote_head_sha = "a" * 40
         patcher = mock.patch.object(
