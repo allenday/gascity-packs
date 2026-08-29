@@ -36,6 +36,11 @@ assignment bytes, matches the review identity and requested skill, and only
 then projects and publishes the `Gas City / docs-impact` Check Run. Neither the
 worker nor the check writes to the PR branch or opens a pull request.
 
+For a `proposal-ready` verdict, the GitHub Check Run stays concise: it reports
+that a documentation proposal is available and links to the City review page.
+That page contains the rendered proposed patch and supporting rationale; the
+check itself never embeds the patch text.
+
 The trusted intake supervisor validates and persists the first accepted review
 for a revision. `no-impact` and `docs-sufficient` are successful conclusions;
 `docs-change-required`, `proposal-ready`, and `inconclusive` require action. A

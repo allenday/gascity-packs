@@ -123,7 +123,7 @@ class GitHubIntakeServiceTests(unittest.TestCase):
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
                 "base": {"ref": "main"},
-                "head": {"ref": "docs-impact", "sha": "a" * 40},
+                "head": {"ref": "docs-impact", "sha": "a" * 40, "repo": {"id": 123, "full_name": "Owner/Repo"}},
             },
             "sender": {"login": "alice"},
         }
@@ -153,7 +153,7 @@ class GitHubIntakeServiceTests(unittest.TestCase):
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
                 "base": {"ref": "main"},
-                "head": {"ref": "docs-impact", "sha": "a" * 40},
+                "head": {"ref": "docs-impact", "sha": "a" * 40, "repo": {"id": 123, "full_name": "Owner/Repo"}},
             },
         }
 
@@ -161,6 +161,8 @@ class GitHubIntakeServiceTests(unittest.TestCase):
 
         self.assertEqual(context["repository_id"], "123")
         self.assertEqual(context["head_sha"], "a" * 40)
+        self.assertEqual(context["head_repository_id"], "123")
+        self.assertEqual(context["head_repository"], "owner/repo")
         self.assertEqual(
             service.github_pr_source_key(context),
             "github-pr:123:42:" + "a" * 40,
