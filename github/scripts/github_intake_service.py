@@ -1277,7 +1277,7 @@ def begin_agent_review_publication(context: dict[str, str], review: dict[str, An
     record = load_docs_impact_run(context)
     if not isinstance(record, dict) or record.get("review") != review:
         return None
-    if str(record.get("check_run_id", "")).strip() or record.get("publication_state") != "ready":
+    if record.get("publication_state") not in {"ready", "in_progress"}:
         return record
     record["publication_state"] = "started"
     common.atomic_write_json(docs_impact_run_path(context), record)
