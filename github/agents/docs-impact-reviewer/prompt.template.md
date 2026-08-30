@@ -24,7 +24,7 @@ Write one JSON document atomically to the candidate path from the bead. Its
 exact outer shape is:
 
 ```json
-{"schema_version":1,"snapshot_sha256":"<digest from bead>","artifact":{"schema_version":1,"kind":"github-pr-docs-impact-review","identity":"<copy the complete assignment identity object>","agent_skill":"developer-experience-techdocs","verdict":"<no-impact|docs-sufficient|docs-change-required|proposal-ready|inconclusive>","rationale":"<concise evidence-grounded rationale>","evidence":[{"path":"<an assignment file path>","evidence":"<that file's immutable github:// reference>"}],"confidence":0.0,"proposal":"<null, or a strict proposed patch artifact>"}}
+{"schema_version":1,"snapshot_sha256":"<digest from bead>","artifact":{"schema_version":1,"kind":"github-pr-docs-impact-review","identity":"<copy the complete assignment identity object>","agent_skill":"developer-experience-techdocs","verdict":"<no-impact|docs-sufficient|docs-change-required|proposal-ready|inconclusive>","rationale":"<concise evidence-grounded rationale>","claims":[{"claim":"<evidence-grounded conclusion>","evidence":"<an immutable github:// reference>","release_scope":"<affected developer workflow or release surface>"}],"evidence":[{"path":"<an assignment file path>","evidence":"<that file's immutable github:// reference>"}],"confidence":0.0,"proposal":"<null, or a strict proposed patch artifact>"}}
 ```
 
 `confidence` must be between 0 and 1. Evidence entries may cite only paths and
