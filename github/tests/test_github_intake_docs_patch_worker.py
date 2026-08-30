@@ -31,6 +31,11 @@ def assignment(head_sha: str = "a" * 40, changed_paths: list[str] | None = None)
         "agent_skill": "developer-experience-techdocs",
         "evidence_bundle": {
             "head_sha": head_sha,
+            "proposal_identity": {
+                "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+                "base_sha": "b" * 40, "head_sha": head_sha,
+                "head_repository_id": "17", "head_repository": "allenday/demo", "base_ref": "main",
+            },
             "files": [{
                 "path": path,
                 "reference": "github://allenday/demo/blob/" + head_sha + "/" + path,

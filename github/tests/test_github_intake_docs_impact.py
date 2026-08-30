@@ -66,6 +66,37 @@ def valid_agent_review(head_sha: str = "a" * 40, verdict: str = "docs-sufficient
 
 
 class DocsImpactTests(unittest.TestCase):
+    def test_followup_pr_plan_is_limited_to_same_repository_heads(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "head_repository_id": "17", "head_repository": "allenday/demo", "head_ref": "feature", "head_sha": "a" * 40}
+        plan = docs_impact.followup_pr_plan(context, valid_agent_review(verdict="proposal-ready"))
+        self.assertEqual(plan["base"], "feature")
+        context["head_repository_id"] = "18"
+        self.assertIsNone(docs_impact.followup_pr_plan(context, valid_agent_review(verdict="proposal-ready")))
+
+    def test_followup_pr_uses_isolated_bot_branch_and_never_author_branch(self) -> None:
+        context = {
+            "repository_id": "17", "repository": "allenday/demo", "number": "9",
+            "head_sha": "a" * 40, "head_repository_id": "17",
+            "head_repository": "allenday/demo", "head_ref": "feature/docs",
+        }
+        commands: list[list[str]] = []
+        with mock.patch.object(docs_impact.common, "pull_request_head_sha_with_token", return_value="a" * 40), mock.patch.object(
+            docs_impact, "_run_git", side_effect=lambda args, *_args: commands.append(args)
+        ), mock.patch.object(
+            docs_impact.common, "git_push_branch_with_token", return_value={"branch": "bot"}
+        ) as push, mock.patch.object(
+            docs_impact.common, "create_pull_request_with_token",
+            return_value={"number": 31, "html_url": "https://github.com/allenday/demo/pull/31"},
+        ) as create:
+            result = docs_impact.create_followup_pull_request("token", context, valid_agent_review(verdict="proposal-ready"))
+
+        self.assertEqual(result["status"], "created")
+        branch = result["branch"]
+        self.assertTrue(branch.startswith("gas-city/docs-9-"))
+        self.assertIn(["git", "checkout", "-b", branch], commands)
+        push.assert_called_once()
+        self.assertEqual(create.call_args.args[5], "feature/docs")
+        self.assertEqual(create.call_args.args[4], branch)
     def setUp(self) -> None:
         self.remote_head_sha = "a" * 40
         patcher = mock.patch.object(
@@ -117,7 +148,7 @@ class DocsImpactTests(unittest.TestCase):
         payload = {"number": 9, "pull_request": {"head": {"sha": "a" * 40}}}
         self.assertEqual(docs_impact.webhook_payload({"event": "pull_request", "payload": payload}), payload)
 
-    def test_evaluate_queues_city_review_without_creating_a_check(self) -> None:
+    def test_evaluate_creates_visible_check_before_queuing_city_review(self) -> None:
         payload = {
             "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
             "pull_request": {"number": 9, "html_url": "https://github.com/allenday/demo/pull/9", "head": {"sha": "a" * 40}},
@@ -128,14 +159,14 @@ class DocsImpactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
             docs_impact, "create_source", return_value={"status": "created", "bead_id": "ga-1", "source_key": source_key}
         ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
+            service.common, "create_check_run_with_token", side_effect=lambda *args, **kwargs: (github_requests.append(args), {"id": 81})[1]
         ), mock.patch.object(
             service.common, "update_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
         ):
             result = docs_impact.evaluate(payload, "delivery-1", "token", paths=["src/cli.py"])
 
         self.assertEqual(result["status"], "queued")
-        self.assertEqual(github_requests, [])
+        self.assertEqual(github_requests[0][4:7], ("Gas City / docs-impact", "in_progress", None))
         self.assertEqual(result["assignment"]["kind"], "github-pr-docs-impact-assignment")
         self.assertEqual(result["assignment"]["identity"]["source_key"], source_key)
         self.assertEqual(result["assignment"]["agent_skill"], "developer-experience-techdocs")
@@ -151,6 +182,7 @@ class DocsImpactTests(unittest.TestCase):
         ) as create_check:
             record = docs_impact.project_agent_review(context, source, review)
             result = docs_impact.publish_agent_review("token", context, review)
+            saved_record = service.load_docs_impact_run(context)
 
         self.assertIsNotNone(record)
         self.assertEqual(result["status"], "published")
@@ -168,7 +200,24 @@ class DocsImpactTests(unittest.TestCase):
             "success",
             args[7],
         )
-        self.assertEqual(service.load_docs_impact_run(context)["check_run_id"], "81")
+        self.assertEqual(saved_record["check_run_id"], "81")
+
+    def test_proposal_ready_check_links_compactly_to_stacked_followup(self) -> None:
+        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
+        source = {"source_key": "github-pr:17:9:" + "a" * 40}
+        review = valid_agent_review(verdict="proposal-ready")
+        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
+            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
+        ), mock.patch.object(service.common, "create_check_run_with_token", return_value={"id": 81}) as create_check:
+            record = docs_impact.project_agent_review(context, source, review)
+            self.assertIsNotNone(record)
+            self.assertIsNotNone(service.save_agent_review_followup(
+                context, record["review"], {"status": "created", "number": "31", "url": "https://github.com/allenday/demo/pull/31"},
+            ))
+            result = docs_impact.publish_agent_review("token", context, record["review"])
+
+        self.assertEqual(result["status"], "published")
+        self.assertIn("[Review documentation follow-up PR #31](https://github.com/allenday/demo/pull/31)", create_check.call_args.args[7]["summary"])
 
     def test_head_change_during_check_creation_neutralizes_stale_success(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
@@ -419,11 +468,12 @@ class DocsImpactTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "response lost"):
                 docs_impact.publish_agent_review("token", context, review)
             retry = docs_impact.publish_agent_review("token", context, review)
+            saved_record = service.load_docs_impact_run(context)
 
         self.assertEqual(retry["status"], "adopted")
         create_check.assert_called_once()
         find_check.assert_called_once_with("token", "allenday", "demo", "a" * 40, external_id)
-        self.assertEqual(service.load_docs_impact_run(context)["check_run_id"], "81")
+        self.assertEqual(saved_record["check_run_id"], "81")
 
     def test_retry_adoption_neutralizes_a_check_for_a_superseded_head(self) -> None:
         context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}

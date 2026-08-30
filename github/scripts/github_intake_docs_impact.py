@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
+import subprocess
 import sys
+import tempfile
 from typing import Any
 
+import github_intake_common as common
 import github_intake_docs_patch as docs_patch
 import github_intake_service as service
 
@@ -18,6 +22,113 @@ STALE_CHECK_OUTPUT = {
     "title": "Documentation impact: stale revision",
     "summary": "This check was invalidated because the pull request revision could not be confirmed as current.",
 }
+
+
+def followup_pr_plan(context: dict[str, str], review: dict[str, Any]) -> dict[str, str] | None:
+    """Authorize a bot follow-up only for a same-repository PR branch."""
+    proposal = review.get("proposal") if isinstance(review, dict) else None
+    if (
+        not isinstance(proposal, dict)
+        or review.get("verdict") != "proposal-ready"
+        or context.get("head_repository_id") != context.get("repository_id")
+        or context.get("head_repository") != context.get("repository")
+        or not context.get("head_ref")
+    ):
+        return None
+    return {
+        "repository": context["repository"],
+        "base": context["head_ref"],
+        "head_sha": context["head_sha"],
+        "patch_sha256": str(proposal.get("patch_sha256", "")),
+    }
+
+
+def _followup_branch(context: dict[str, str], review: dict[str, Any]) -> str:
+    proposal = review["proposal"]
+    return f"gas-city/docs-{int(context['number'])}-{str(proposal['patch_sha256'])[:12]}"
+
+
+def _run_git(args: list[str], cwd: pathlib.Path, env: dict[str, str] | None = None) -> None:
+    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise common.GitHubAPIError(f"{' '.join(args[:3])} failed: {result.stderr.strip()}")
+
+
+def _authenticated_git_env(token: str) -> dict[str, str]:
+    """Return a non-interactive Git environment without putting a token in a URL."""
+    import base64
+
+    basic_auth = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    base_url = common.github_web_base().rstrip("/")
+    env = os.environ.copy()
+    env.update({
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": f"http.{base_url}/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic_auth}",
+    })
+    return env
+
+
+def create_followup_pull_request(token: str, context: dict[str, str], review: dict[str, Any]) -> dict[str, str]:
+    """Apply one validated docs proposal in an isolated checkout and open a stacked PR.
+
+    The author branch is never modified.  Any unsafe, unavailable, or forked
+    case returns a proposal-only result so publication of the original review
+    still happens.
+    """
+    plan = followup_pr_plan(context, review)
+    if plan is None:
+        return {"status": "proposal-only", "reason": "followup_not_authorized"}
+    proposal = review["proposal"]
+    try:
+        owner, repo = context["repository"].split("/", 1)
+        branch = _followup_branch(context, review)
+        patch = str(proposal["diff"])
+        if not patch:
+            raise ValueError("proposal diff is empty")
+        require_current = lambda: common.pull_request_head_sha_with_token(
+            token, owner, repo, context["number"],
+        ) == context["head_sha"]
+        if not require_current():
+            return {"status": "proposal-only", "reason": "head_sha_changed"}
+        with tempfile.TemporaryDirectory(prefix="gas-city-docs-") as directory:
+            checkout = pathlib.Path(directory)
+            env = _authenticated_git_env(token)
+            _run_git(["git", "init", "--quiet"], checkout, env)
+            _run_git(["git", "remote", "add", "origin", common.repository_git_url(context["repository"])], checkout, env)
+            _run_git(["git", "fetch", "--depth", "1", "origin", context["head_sha"]], checkout, env)
+            _run_git(["git", "checkout", "--detach", "--quiet", "FETCH_HEAD"], checkout, env)
+            patch_file = checkout / "proposal.patch"
+            patch_file.write_text(patch, encoding="utf-8")
+            _run_git(["git", "apply", "--check", str(patch_file)], checkout, env)
+            _run_git(["git", "apply", str(patch_file)], checkout, env)
+            patch_file.unlink()
+            _run_git(["git", "checkout", "-b", branch], checkout, env)
+            _run_git(["git", "config", "user.name", "Gas City"], checkout, env)
+            _run_git(["git", "config", "user.email", "gas-city[bot]@users.noreply.github.com"], checkout, env)
+            # The proposal validator has already restricted this diff to docs-only paths.
+            _run_git(["git", "add", "-A"], checkout, env)
+            _run_git(["git", "commit", "--quiet", "-m", f"docs: address PR #{context['number']} review"], checkout, env)
+            if not require_current():
+                return {"status": "proposal-only", "reason": "head_sha_changed"}
+            common.git_push_branch_with_token(token, context["repository"], branch, cwd=str(checkout))
+        if not require_current():
+            return {"status": "proposal-only", "reason": "head_sha_changed"}
+        created = common.create_pull_request_with_token(
+            token, owner, repo,
+            f"docs: address PR #{context['number']} review",
+            branch, plan["base"],
+            "Generated by Gas City from the validated documentation proposal for "
+            f"#{context['number']}. Merge this into `{plan['base']}`, then update the original pull request.",
+        )
+        url = str(created.get("html_url", "")).strip()
+        number = str(created.get("number", "")).strip()
+        if not url or not number:
+            raise common.GitHubAPIError("created follow-up pull request did not contain URL and number")
+        return {"status": "created", "url": url, "number": number, "branch": branch}
+    except (KeyError, TypeError, ValueError, OSError, common.GitHubAPIError) as exc:
+        return {"status": "proposal-only", "reason": "followup_unavailable", "detail": str(exc)}
 
 
 def _review_identity(context: dict[str, str]) -> dict[str, Any] | None:
@@ -175,7 +286,13 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
             "summary": f"{public.get('why', '')}\n\nNext action: {public.get('next_action', '')}",
         }
         if verdict == "proposal-ready" and isinstance(public.get("proposal_diff"), str):
-            output["summary"] += "\n\nDocumentation proposal available. Review it on the linked Gas City page."
+            followup = public.get("followup") if isinstance(public.get("followup"), dict) else {}
+            if str(followup.get("url", "")).startswith("https://") and str(followup.get("number", "")).isdigit():
+                output["summary"] += (
+                    f"\n\n[Review documentation follow-up PR #{followup['number']}]({followup['url']})."
+                )
+            else:
+                output["summary"] += "\n\nDocumentation proposal available. Review it on the linked Gas City page."
         if reconcile_remote:
             remote_check = service.common.find_check_run_by_external_id_with_token(
                 token, owner, repository, context["head_sha"], external_id,
@@ -219,6 +336,18 @@ def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, 
     return service.create_pull_request_source(request)
 
 
+def begin_visible_review(token: str, context: dict[str, str]) -> dict[str, Any] | None:
+    """Create the sole visible in-progress check before asynchronous City work."""
+    with service.docs_impact_run_lock(context):
+        existing = service.load_docs_impact_run(context)
+        if isinstance(existing, dict):
+            return existing
+        owner, repo = context["repository"].split("/", 1)
+        locator = service.docs_impact_run_locator(context)
+        check = common.create_check_run_with_token(token, owner, repo, context["head_sha"], "Gas City / docs-impact", "in_progress", None, {"title": "Documentation impact: reviewing", "summary": "Gas City is reviewing documentation impact for this revision."}, common.docs_impact_run_url(locator), external_id=service.docs_impact_check_external_id(locator))
+        return service.begin_docs_impact_run(context, check)
+
+
 def webhook_payload(document: dict[str, Any]) -> dict[str, Any]:
     """Accept either a direct webhook payload or the durable intake envelope."""
     nested = document.get("payload")
@@ -232,6 +361,8 @@ def evaluate(
     paths: list[str] | None = None, evidence_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = service.github_pr_context(payload)
+    if begin_visible_review(token, context) is None:
+        raise RuntimeError("could not begin visible docs-impact review")
     source = create_source(payload, delivery_id, context)
     if source.get("status") not in {"created", "duplicate"}:
         raise RuntimeError(f"could not create source bead: {source.get('reason', source.get('status'))}")

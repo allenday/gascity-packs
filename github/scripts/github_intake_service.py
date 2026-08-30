@@ -1036,6 +1036,21 @@ def docs_impact_check_external_id(run_locator: str) -> str:
     return f"docs-impact:{run_locator}"
 
 
+def begin_docs_impact_run(context: dict[str, str], check_run: dict[str, Any]) -> dict[str, Any] | None:
+    """Persist the immediately visible GitHub check before City work starts."""
+    check_run_id = str(check_run.get("id", "")).strip()
+    if not check_run_id:
+        return None
+    identity = {"repository": context["repository"], "repository_id": context["repository_id"], "pr_number": context["number"], "head_sha": context["head_sha"]}
+    path = docs_impact_run_path(context)
+    existing = common.read_json(path)
+    if isinstance(existing, dict):
+        return existing if existing.get("identity") == identity else None
+    record = {"schema_version": 3, "identity": identity, "review": None, "public": {}, "run_locator": docs_impact_run_locator(context), "publication_state": "in_progress", "check_run_id": check_run_id}
+    common.atomic_write_json(path, record)
+    return record
+
+
 def docs_impact_assignment_path(context: dict[str, str]) -> str:
     """Return the revision-bound path in the existing sanitized worker inbox."""
     root = os.environ.get(
@@ -1101,6 +1116,12 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
     normalized_paths = sorted({str(path).strip() for path in paths if str(path).strip()})[:100]
     if evidence_bundle is None:
         evidence_bundle = {"head_sha": context["head_sha"], "files": [{"path": path, "reference": f"github://{context['repository']}/blob/{context['head_sha']}/{path}", "patch": "Evidence content unavailable."} for path in normalized_paths]}
+    evidence_bundle = {**evidence_bundle, "proposal_identity": {
+        "repository_id": context["repository_id"], "repository": context["repository"],
+        "pr_number": pr_number, "base_sha": context["base_sha"], "head_sha": context["head_sha"],
+        "head_repository_id": context["head_repository_id"], "head_repository": context["head_repository"],
+        "base_ref": context["base_ref"],
+    }}
     assignment = {
         "schema_version": DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION,
         "kind": "github-pr-docs-impact-assignment",
@@ -1206,6 +1227,12 @@ def save_agent_review_run(context: dict[str, str], review: dict[str, Any]) -> di
     if isinstance(existing, dict):
         if existing.get("schema_version") == 2 and existing.get("identity") == identity and existing.get("review") == review:
             return existing
+        if existing.get("schema_version") == 3 and existing.get("identity") == identity and existing.get("review") is None:
+            existing["review"] = review
+            existing["public"] = public_agent_review(review)
+            existing["publication_state"] = "ready"
+            common.atomic_write_json(docs_impact_run_path(context), existing)
+            return existing
         return None
     record = {
         "schema_version": 2,
@@ -1216,6 +1243,31 @@ def save_agent_review_run(context: dict[str, str], review: dict[str, Any]) -> di
         "publication_state": "ready",
         "check_run_id": "",
     }
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
+def save_agent_review_followup(
+    context: dict[str, str], review: dict[str, Any], followup: dict[str, str],
+) -> dict[str, Any] | None:
+    """Add a narrow public link to an already-created stacked follow-up PR."""
+    record = load_docs_impact_run(context)
+    if not isinstance(record, dict) or record.get("review") != review:
+        return None
+    if str(followup.get("status", "")) != "created":
+        return record
+    url = str(followup.get("url", "")).strip()
+    number = str(followup.get("number", "")).strip()
+    if not url.startswith("https://") or not number.isdigit():
+        return None
+    public = record.get("public")
+    if not isinstance(public, dict):
+        return None
+    existing = public.get("followup")
+    proposed = {"url": url, "number": number}
+    if existing is not None and existing != proposed:
+        return None
+    public["followup"] = proposed
     common.atomic_write_json(docs_impact_run_path(context), record)
     return record
 
@@ -2519,8 +2571,12 @@ def render_docs_impact_run(record: dict[str, Any]) -> str:
     ) or "<li>None</li>"
     proposal = ""
     if verdict == "proposal-ready" and isinstance(public.get("proposal_diff"), str):
+        followup = public.get("followup") if isinstance(public.get("followup"), dict) else {}
+        href = html.escape(str(followup.get("url", "")), quote=True)
+        number = html.escape(str(followup.get("number", "")))
+        link = f"<p><a href=\"{href}\">Review documentation follow-up PR #{number}</a></p>" if href and number else ""
         diff = html.escape(public["proposal_diff"])
-        proposal = f"<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
+        proposal = f"{link}<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
     return f"""<!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><title>Documentation impact review</title>
 <style>body {{ font-family: system-ui, sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }} pre {{ background:#f6f8fa; padding:1rem; overflow:auto; }} code {{ font-family: ui-monospace, monospace; }} dt {{ font-weight:600; margin-top:.5rem; }}</style>
