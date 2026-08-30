@@ -5,7 +5,7 @@ import unittest
 
 
 class DocsReviewerPromptTests(unittest.TestCase):
-    def test_allows_a_strictly_bounded_proposal_ready_review(self) -> None:
+    def test_uses_a_workspace_and_tool_generated_proposal(self) -> None:
         prompt = (
             pathlib.Path(__file__).resolve().parents[1]
             / "agents"
@@ -14,9 +14,10 @@ class DocsReviewerPromptTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("proposal-ready", prompt)
-        self.assertIn("A proposal is allowed only", prompt)
-        self.assertIn("complete removed documentation text", prompt)
-        self.assertNotIn("This route does not create a\nproposal.", prompt)
+        self.assertIn("git diff --cached", prompt)
+        self.assertIn("github_intake_docs_review_workspace.py submit", prompt)
+        self.assertIn("Do not hand-write a diff", prompt)
+        self.assertNotIn("write the proposed unified-diff text exactly", prompt)
 
 
 if __name__ == "__main__":
