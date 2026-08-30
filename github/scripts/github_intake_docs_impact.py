@@ -336,6 +336,18 @@ def create_source(payload: dict[str, Any], delivery_id: str, context: dict[str, 
     return service.create_pull_request_source(request)
 
 
+def begin_visible_review(token: str, context: dict[str, str]) -> dict[str, Any] | None:
+    """Create the sole visible in-progress check before asynchronous City work."""
+    with service.docs_impact_run_lock(context):
+        existing = service.load_docs_impact_run(context)
+        if isinstance(existing, dict):
+            return existing
+        owner, repo = context["repository"].split("/", 1)
+        locator = service.docs_impact_run_locator(context)
+        check = common.create_check_run_with_token(token, owner, repo, context["head_sha"], "Gas City / docs-impact", "in_progress", None, {"title": "Documentation impact: reviewing", "summary": "Gas City is reviewing documentation impact for this revision."}, common.docs_impact_run_url(locator), external_id=service.docs_impact_check_external_id(locator))
+        return service.begin_docs_impact_run(context, check)
+
+
 def webhook_payload(document: dict[str, Any]) -> dict[str, Any]:
     """Accept either a direct webhook payload or the durable intake envelope."""
     nested = document.get("payload")
@@ -349,6 +361,8 @@ def evaluate(
     paths: list[str] | None = None, evidence_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = service.github_pr_context(payload)
+    if begin_visible_review(token, context) is None:
+        raise RuntimeError("could not begin visible docs-impact review")
     source = create_source(payload, delivery_id, context)
     if source.get("status") not in {"created", "duplicate"}:
         raise RuntimeError(f"could not create source bead: {source.get('reason', source.get('status'))}")

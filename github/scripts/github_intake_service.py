@@ -1036,6 +1036,21 @@ def docs_impact_check_external_id(run_locator: str) -> str:
     return f"docs-impact:{run_locator}"
 
 
+def begin_docs_impact_run(context: dict[str, str], check_run: dict[str, Any]) -> dict[str, Any] | None:
+    """Persist the immediately visible GitHub check before City work starts."""
+    check_run_id = str(check_run.get("id", "")).strip()
+    if not check_run_id:
+        return None
+    identity = {"repository": context["repository"], "repository_id": context["repository_id"], "pr_number": context["number"], "head_sha": context["head_sha"]}
+    path = docs_impact_run_path(context)
+    existing = common.read_json(path)
+    if isinstance(existing, dict):
+        return existing if existing.get("identity") == identity else None
+    record = {"schema_version": 3, "identity": identity, "review": None, "public": {}, "run_locator": docs_impact_run_locator(context), "publication_state": "in_progress", "check_run_id": check_run_id}
+    common.atomic_write_json(path, record)
+    return record
+
+
 def docs_impact_assignment_path(context: dict[str, str]) -> str:
     """Return the revision-bound path in the existing sanitized worker inbox."""
     root = os.environ.get(
@@ -1211,6 +1226,12 @@ def save_agent_review_run(context: dict[str, str], review: dict[str, Any]) -> di
     existing = common.read_json(docs_impact_run_path(context))
     if isinstance(existing, dict):
         if existing.get("schema_version") == 2 and existing.get("identity") == identity and existing.get("review") == review:
+            return existing
+        if existing.get("schema_version") == 3 and existing.get("identity") == identity and existing.get("review") is None:
+            existing["review"] = review
+            existing["public"] = public_agent_review(review)
+            existing["publication_state"] = "ready"
+            common.atomic_write_json(docs_impact_run_path(context), existing)
             return existing
         return None
     record = {

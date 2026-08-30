@@ -148,7 +148,7 @@ class DocsImpactTests(unittest.TestCase):
         payload = {"number": 9, "pull_request": {"head": {"sha": "a" * 40}}}
         self.assertEqual(docs_impact.webhook_payload({"event": "pull_request", "payload": payload}), payload)
 
-    def test_evaluate_queues_city_review_without_creating_a_check(self) -> None:
+    def test_evaluate_creates_visible_check_before_queuing_city_review(self) -> None:
         payload = {
             "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
             "pull_request": {"number": 9, "html_url": "https://github.com/allenday/demo/pull/9", "head": {"sha": "a" * 40}},
@@ -159,14 +159,14 @@ class DocsImpactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
             docs_impact, "create_source", return_value={"status": "created", "bead_id": "ga-1", "source_key": source_key}
         ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
+            service.common, "create_check_run_with_token", side_effect=lambda *args, **kwargs: (github_requests.append(args), {"id": 81})[1]
         ), mock.patch.object(
             service.common, "update_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
         ):
             result = docs_impact.evaluate(payload, "delivery-1", "token", paths=["src/cli.py"])
 
         self.assertEqual(result["status"], "queued")
-        self.assertEqual(github_requests, [])
+        self.assertEqual(github_requests[0][4:7], ("Gas City / docs-impact", "in_progress", None))
         self.assertEqual(result["assignment"]["kind"], "github-pr-docs-impact-assignment")
         self.assertEqual(result["assignment"]["identity"]["source_key"], source_key)
         self.assertEqual(result["assignment"]["agent_skill"], "developer-experience-techdocs")
