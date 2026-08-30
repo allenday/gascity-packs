@@ -14,6 +14,19 @@ from github.tests.test_github_intake_docs_patch_worker import assignment
 
 
 class CityDocsLauncherTests(unittest.TestCase):
+    def test_bead_description_requires_validator_compatible_proposal(self) -> None:
+        description = launcher.bead_description(
+            assignment=assignment(),
+            digest="a" * 64,
+            input_path=pathlib.Path("/immutable/revision.json"),
+            output_path=pathlib.Path("/candidate/revision.json"),
+            skill_dir=pathlib.Path("/skills/developer-experience-techdocs"),
+        )
+
+        self.assertIn("diff --git a/<path> b/<path>", description)
+        self.assertIn("patch_sha256", description)
+        self.assertIn("validate_agent_review", description)
+
     def test_dispatches_validated_immutable_assignment_via_gc_sling(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
