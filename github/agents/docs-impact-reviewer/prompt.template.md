@@ -38,6 +38,9 @@ matching `files` SHA-256 entries, immutable-evidence `claims`, and at least one
 prefer a `proposal-ready` restoration that adds back only that exact text; its
 diff is supported without guessing any source fact. Otherwise use
 `proposal: null`; never invent source facts or modify non-documentation files.
+A proposal has exactly `schema_version`, `status`, `generated_at`, `identity`,
+`patch_sha256`, `diff`, `files`, `claims`, and `checks`: no `kind` field. Its
+`identity` must copy `evidence_bundle.proposal_identity` exactly.
 Write to a temporary file in the candidate directory, validate it
 with `python3 -m json.tool`, `chmod 0600`, then rename it over the candidate
 path. Do not write an artifact when evidence validation or either digest check

@@ -72,13 +72,19 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     evidence_bundle = value["evidence_bundle"]
     if (
         not isinstance(evidence_bundle, dict)
-        or set(evidence_bundle) != {"head_sha", "files"}
+        or set(evidence_bundle) != {"head_sha", "files", "proposal_identity"}
         or _required_text(evidence_bundle["head_sha"], "evidence_bundle.head_sha") != head_sha
         or not isinstance(evidence_bundle["files"], list)
         or not evidence_bundle["files"]
         or len(evidence_bundle["files"]) > 100
     ):
         raise ValueError("evidence_bundle must be bounded and bound to the assignment SHA")
+    proposal_identity = evidence_bundle["proposal_identity"]
+    if not isinstance(proposal_identity, dict) or set(proposal_identity) != {
+        "repository_id", "repository", "pr_number", "base_sha", "head_sha",
+        "head_repository_id", "head_repository", "base_ref",
+    }:
+        raise ValueError("evidence_bundle proposal_identity must be complete")
     files: list[dict[str, str]] = []
     total_evidence_bytes = 0
     for item in evidence_bundle["files"]:
@@ -111,7 +117,7 @@ def validate_assignment(value: Any) -> dict[str, Any]:
             "source_key": source_key,
         },
         "agent_skill": AGENT_SKILL,
-        "evidence_bundle": {"head_sha": head_sha, "files": files},
+        "evidence_bundle": {"head_sha": head_sha, "files": files, "proposal_identity": proposal_identity},
     }
 
 
