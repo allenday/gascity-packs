@@ -1439,6 +1439,18 @@ def create_pull_request(
     )
 
 
+def create_pull_request_with_token(
+    token: str, owner: str, repo: str, title: str, head: str, base: str, body: str,
+) -> dict[str, Any]:
+    """Create a pull request with the already-scoped installation token."""
+    return github_api_request(
+        "POST",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls",
+        payload={"title": title, "head": head, "base": base, "body": body},
+        bearer_token=token,
+    )
+
+
 def repository_git_url(repository_full_name: str) -> str:
     return f"{github_web_base().rstrip('/')}/{repository_full_name}.git"
 
@@ -1473,6 +1485,34 @@ def git_push_branch(
         "stdout": result.stdout.strip(),
         "stderr": result.stderr.strip(),
     }
+
+
+def git_push_branch_with_token(
+    token: str,
+    repository_full_name: str,
+    branch: str,
+    ref: str = "HEAD",
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Push one ref with an existing installation token from an explicit checkout."""
+    basic_auth = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    base_url = github_web_base().rstrip("/")
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = f"http.{base_url}/.extraheader"
+    env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {basic_auth}"
+    result = subprocess.run(
+        ["git", "push", repository_git_url(repository_full_name), f"{ref}:refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        cwd=cwd,
+    )
+    if result.returncode != 0:
+        raise GitHubAPIError(f"git push failed with exit code {result.returncode}: {result.stderr.strip()}")
+    return {"branch": branch, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
 
 
 def install_url(app_cfg: dict[str, Any]) -> str:

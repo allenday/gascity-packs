@@ -1220,6 +1220,31 @@ def save_agent_review_run(context: dict[str, str], review: dict[str, Any]) -> di
     return record
 
 
+def save_agent_review_followup(
+    context: dict[str, str], review: dict[str, Any], followup: dict[str, str],
+) -> dict[str, Any] | None:
+    """Add a narrow public link to an already-created stacked follow-up PR."""
+    record = load_docs_impact_run(context)
+    if not isinstance(record, dict) or record.get("review") != review:
+        return None
+    if str(followup.get("status", "")) != "created":
+        return record
+    url = str(followup.get("url", "")).strip()
+    number = str(followup.get("number", "")).strip()
+    if not url.startswith("https://") or not number.isdigit():
+        return None
+    public = record.get("public")
+    if not isinstance(public, dict):
+        return None
+    existing = public.get("followup")
+    proposed = {"url": url, "number": number}
+    if existing is not None and existing != proposed:
+        return None
+    public["followup"] = proposed
+    common.atomic_write_json(docs_impact_run_path(context), record)
+    return record
+
+
 def begin_agent_review_publication(context: dict[str, str], review: dict[str, Any]) -> dict[str, Any] | None:
     """Durably mark a projected review before its sole Check Run POST."""
     record = load_docs_impact_run(context)
@@ -2519,8 +2544,12 @@ def render_docs_impact_run(record: dict[str, Any]) -> str:
     ) or "<li>None</li>"
     proposal = ""
     if verdict == "proposal-ready" and isinstance(public.get("proposal_diff"), str):
+        followup = public.get("followup") if isinstance(public.get("followup"), dict) else {}
+        href = html.escape(str(followup.get("url", "")), quote=True)
+        number = html.escape(str(followup.get("number", "")))
+        link = f"<p><a href=\"{href}\">Review documentation follow-up PR #{number}</a></p>" if href and number else ""
         diff = html.escape(public["proposal_diff"])
-        proposal = f"<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
+        proposal = f"{link}<h2>Proposed patch</h2><pre><code class=\"diff\">{diff}</code></pre>"
     return f"""<!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><title>Documentation impact review</title>
 <style>body {{ font-family: system-ui, sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }} pre {{ background:#f6f8fa; padding:1rem; overflow:auto; }} code {{ font-family: ui-monospace, monospace; }} dt {{ font-weight:600; margin-top:.5rem; }}</style>

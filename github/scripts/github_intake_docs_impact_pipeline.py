@@ -183,7 +183,15 @@ def run_handoff(
     record = docs_impact.project_agent_review(context, source, review)
     if record is None:
         return {"status": "candidate_rejected", "head_sha": context["head_sha"]}
-    return docs_impact.publish_agent_review(token, context, review)
+    canonical_review = record.get("review")
+    if not isinstance(canonical_review, dict):
+        return {"status": "candidate_rejected", "head_sha": context["head_sha"]}
+    if canonical_review.get("verdict") == "proposal-ready":
+        followup = docs_impact.create_followup_pull_request(token, context, canonical_review)
+        with service.docs_impact_run_lock(context):
+            if service.save_agent_review_followup(context, canonical_review, followup) is None:
+                return {"status": "candidate_rejected", "head_sha": context["head_sha"]}
+    return docs_impact.publish_agent_review(token, context, canonical_review)
 
 
 def main() -> int:
