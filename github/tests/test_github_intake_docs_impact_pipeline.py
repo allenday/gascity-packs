@@ -293,16 +293,16 @@ class DocsImpactPipelineTests(unittest.TestCase):
                     complete_adapter_work,
                     wait_seconds=0,
                 )
+                record = pipeline.service.load_docs_impact_run({
+                    "repository_id": "17",
+                    "repository": "allenday/demo",
+                    "number": "9",
+                    "head_sha": "a" * 40,
+                })
 
             self.assertEqual(result["status"], "published")
             create_check.assert_called_once()
             self.assertEqual(create_check.call_args.args[5:7], ("in_progress", None))
             self.assertEqual(update_check.call_args.args[4:6], ("completed", "success"))
-            record = pipeline.service.load_docs_impact_run({
-                "repository_id": "17",
-                "repository": "allenday/demo",
-                "number": "9",
-                "head_sha": "a" * 40,
-            })
             self.assertEqual(record["check_run_id"], "81")
             self.assertNotIn("mc-private", pipeline.service.render_docs_impact_run(record))
