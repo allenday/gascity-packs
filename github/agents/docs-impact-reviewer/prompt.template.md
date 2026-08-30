@@ -35,7 +35,8 @@ complete assignment identity in the proposal, and supply a `status: proposed`
 artifact with RFC3339 `generated_at`, `patch_sha256`, documentation-only `diff`,
 matching `files` SHA-256 entries, immutable-evidence `claims` whose every item
 has exactly `claim`, `evidence`, and `release_scope`, and at least one
-`checks` entry. When the evidence contains complete removed documentation text,
+`checks` entry with exactly `command`, `status` (`passed`, `failed`, or
+`unavailable`), and `explanation`. When the evidence contains complete removed documentation text,
 prefer a `proposal-ready` restoration that adds back only that exact text; its
 diff is supported without guessing any source fact. Otherwise use
 `proposal: null`; never invent source facts or modify non-documentation files.
