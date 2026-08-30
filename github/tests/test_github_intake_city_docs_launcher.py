@@ -14,6 +14,21 @@ from github.tests.test_github_intake_docs_patch_worker import assignment
 
 
 class CityDocsLauncherTests(unittest.TestCase):
+    def test_bead_description_requires_workspace_tool_submission(self) -> None:
+        description = launcher.bead_description(
+            assignment=assignment(),
+            digest="a" * 64,
+            input_path=pathlib.Path("/immutable/revision.json"),
+            output_path=pathlib.Path("/candidate/revision.json"),
+            skill_dir=pathlib.Path("/skills/developer-experience-techdocs"),
+            workspace=pathlib.Path("/workspaces/revision"),
+            review_tool=pathlib.Path("/scripts/github_intake_docs_review_workspace.py"),
+        )
+
+        self.assertIn("Workspace: /workspaces/revision", description)
+        self.assertIn("github_intake_docs_review_workspace.py submit", description)
+        self.assertIn("Do not hand-write a diff", description)
+
     def test_dispatches_validated_immutable_assignment_via_gc_sling(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

@@ -20,32 +20,21 @@ from the bead. The assignment contains the only permitted evidence. Review the
 developer-facing impact of that evidence, then run `sha256sum` again and require
 the same digest.
 
-Write one JSON document atomically to the candidate path from the bead. Its
-exact outer shape is:
+The routed bead supplies a disposable Git workspace and a local review tool.
+For a proposal-ready review, work on the documentation itself: edit or restore
+only documentation files in that workspace, stage the intended result with
+`git add`, and inspect it with `git diff --cached`. The workspace begins empty,
+so create a file only when the immutable evidence fully supports its content.
+Use no source content that is not in the assignment.
 
-```json
-{"schema_version":1,"snapshot_sha256":"<digest from bead>","artifact":{"schema_version":1,"kind":"github-pr-docs-impact-review","identity":"<copy the complete assignment identity object>","agent_skill":"developer-experience-techdocs","verdict":"<no-impact|docs-sufficient|docs-change-required|proposal-ready|inconclusive>","rationale":"<concise evidence-grounded rationale>","evidence":[{"path":"<an assignment file path>","evidence":"<that file's immutable github:// reference>"}],"confidence":0.0,"proposal":"<null, or a strict proposed patch artifact>"}}
-```
-
-`confidence` must be between 0 and 1. Evidence entries may cite only paths and
-immutable references present in the assignment. A proposal is allowed only when
-the assignment alone supports a small, safe unified diff that changes only
-documentation paths. In that case set `verdict` to `proposal-ready`, use the
-complete assignment identity in the proposal, and supply a `status: proposed`
-artifact with RFC3339 `generated_at`, `patch_sha256`, documentation-only `diff`,
-matching `files` SHA-256 entries, immutable-evidence `claims`, and at least one
-`checks` entry. When the evidence contains complete removed documentation text,
-prefer a `proposal-ready` restoration that adds back only that exact text; its
-diff is supported without guessing any source fact. Otherwise use
-`proposal: null`; never invent source facts or modify non-documentation files.
-A proposal has exactly `schema_version`, `status`, `generated_at`, `identity`,
-`patch_sha256`, `diff`, `files`, `claims`, and `checks`: no `kind` field. Its
-`identity` must copy `evidence_bundle.proposal_identity` exactly.
-Write to a temporary file in the candidate directory, validate it
-with `python3 -m json.tool`, `chmod 0600`, then rename it over the candidate
-path. Do not write an artifact when evidence validation or either digest check
-fails. Record `gc.outcome=pass` plus the review verdict on the claimed bead and
-close exactly that review/control bead. On unrecoverable failure, record
+Publish the result with the exact `github_intake_docs_review_workspace.py submit`
+command in the bead description, selecting an evidence path from the assignment.
+The tool derives the canonical Git patch, all hashes, checks, and JSON candidate
+atomically. Do not hand-write a diff, patch hash, proposal JSON, or candidate
+envelope. For a non-proposal result, use the same tool with the appropriate
+verdict and do not stage files. Do not write an artifact when evidence validation
+or either digest check fails. Record `gc.outcome=pass` plus the review verdict on
+the claimed bead and close exactly that review/control bead. On unrecoverable failure, record
 `gc.outcome=fail` plus a concise failure class and reason before closing it.
 Never mutate the source PR or any GitHub state. After close, run
 `gc runtime drain-ack` and exit so another review starts with clean context.
