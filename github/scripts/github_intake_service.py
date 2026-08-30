@@ -1101,6 +1101,12 @@ def queue_agent_review(context: dict[str, str], source: dict[str, Any], paths: l
     normalized_paths = sorted({str(path).strip() for path in paths if str(path).strip()})[:100]
     if evidence_bundle is None:
         evidence_bundle = {"head_sha": context["head_sha"], "files": [{"path": path, "reference": f"github://{context['repository']}/blob/{context['head_sha']}/{path}", "patch": "Evidence content unavailable."} for path in normalized_paths]}
+    evidence_bundle = {**evidence_bundle, "proposal_identity": {
+        "repository_id": context["repository_id"], "repository": context["repository"],
+        "pr_number": pr_number, "base_sha": context["base_sha"], "head_sha": context["head_sha"],
+        "head_repository_id": context["head_repository_id"], "head_repository": context["head_repository"],
+        "base_ref": context["base_ref"],
+    }}
     assignment = {
         "schema_version": DOCS_IMPACT_ASSIGNMENT_SCHEMA_VERSION,
         "kind": "github-pr-docs-impact-assignment",
