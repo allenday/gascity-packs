@@ -268,7 +268,7 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
                 "reason": "publication_stale",
                 "check_run_id": str(saved["check_run_id"]),
             }
-        if str(record.get("check_run_id", "")).strip():
+        if str(record.get("check_run_id", "")).strip() and record.get("publication_state") == "published":
             return {"status": "duplicate", "check_run_id": str(record["check_run_id"])}
         reconcile_remote = record.get("publication_state") == "started"
         if record.get("publication_state") == "ready":
@@ -304,6 +304,11 @@ def publish_agent_review(token: str, context: dict[str, str], review: dict[str, 
                 if reconciled.get("status") == "published":
                     reconciled["status"] = "adopted"
                 return reconciled
+        existing_check_id = str(record.get("check_run_id", "")).strip()
+        if existing_check_id:
+            return _complete_if_current(
+                token, owner, repository, context, validated, {"id": existing_check_id}, conclusion, output,
+            )
         check_run = service.common.create_check_run_with_token(
             token,
             owner,
