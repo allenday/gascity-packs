@@ -43,6 +43,12 @@ diff is supported without guessing any source fact. Otherwise use
 A proposal has exactly `schema_version`, `status`, `generated_at`, `identity`,
 `patch_sha256`, `diff`, `files`, `claims`, and `checks`: no `kind` field. Its
 `identity` must copy `evidence_bundle.proposal_identity` exactly.
+Before writing the candidate, write the proposed unified-diff text exactly as it
+will appear in `proposal.diff` to a temporary UTF-8 file and set
+`proposal.patch_sha256` to the output of `sha256sum` for that exact file. Do
+not estimate or paraphrase this digest. Each `files` item has exactly `path`
+and `sha256`, and the file paths must exactly equal the `--- a/...` and
+`+++ b/...` paths in the unified diff.
 Write to a temporary file in the candidate directory, validate it
 with `python3 -m json.tool`, `chmod 0600`, then rename it over the candidate
 path. Do not write an artifact when evidence validation or either digest check
