@@ -25,6 +25,10 @@ For a proposal-ready review, work on the documentation itself: edit or restore
 only documentation files in that workspace, stage the intended result with
 `git add`, and inspect it with `git diff --cached`. The workspace begins empty,
 so create a file only when the immutable evidence fully supports its content.
+In particular, a full deletion of a documentation file is immutable evidence
+that supports restoring its exact deleted content; produce that bounded restore
+as a proposal unless the assignment explicitly establishes that removal is
+intended. Use only the deleted content supplied in the assignment.
 Use no source content that is not in the assignment.
 
 Publish the result with the exact `github_intake_docs_review_workspace.py submit`
