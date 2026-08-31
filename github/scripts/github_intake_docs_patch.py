@@ -23,14 +23,8 @@ DOCUMENTATION_FILENAMES = {"readme.md", "changelog.md", "contributing.md"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIFF_PATH_PATTERN = re.compile(r"^diff --git a/(.+) b/(.+)$", re.MULTILINE)
+GITLINK_MODE_PATTERN = re.compile(r"^(?:new|old) (?:file )?mode 160000$|^index [0-9a-f]+\.\.[0-9a-f]+ 160000$", re.MULTILINE)
 RFC3339_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
-SECRET_PATTERNS = (
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+"),
-    re.compile(r"(?i)\b(x-auth-token|private[-_ ]?key|client[-_ ]?secret)\s*[:=]\s*[^\s]+"),
-)
-
 ROOT_FIELDS = {
     "schema_version", "status", "generated_at", "identity", "patch_sha256", "diff", "files", "claims", "checks",
 }
@@ -78,12 +72,6 @@ def _text(value: Any, field: str, limit: int = 4096) -> str:
     return value
 
 
-def _redact(value: str) -> str:
-    for pattern in SECRET_PATTERNS:
-        value = pattern.sub(lambda match: match.group(1) + "[REDACTED]" if match.lastindex else "[REDACTED]", value)
-    return value
-
-
 def _validate_path(path: str) -> str:
     if "\\" in path or path.startswith("/") or path in {".", ".."}:
         raise ValueError(f"unsafe documentation path: {path!r}")
@@ -102,7 +90,7 @@ def _validate_identity(identity: Any) -> dict[str, Any]:
     normalized = copy.deepcopy(identity)
     for field in ("repository_id", "repository", "head_repository_id", "head_repository", "base_ref"):
         normalized[field] = _text(normalized[field], f"identity.{field}", 256)
-    if not isinstance(normalized["pr_number"], int) or normalized["pr_number"] <= 0:
+    if type(normalized["pr_number"]) is not int or normalized["pr_number"] <= 0:
         raise ValueError("identity.pr_number must be a positive integer")
     for field in ("base_sha", "head_sha"):
         value = _text(normalized[field], f"identity.{field}", 40).lower()
@@ -120,8 +108,8 @@ def _validate_diff(diff: Any, patch_sha256: str, files: list[dict[str, Any]]) ->
         raise ValueError("binary diff is not allowed")
     if "new file mode 120000" in diff or "old mode 120000" in diff:
         raise ValueError("symlink diff is not allowed")
-    if any(pattern.search(diff) for pattern in SECRET_PATTERNS):
-        raise ValueError("diff contains a secret")
+    if GITLINK_MODE_PATTERN.search(diff):
+        raise ValueError("gitlink diff is not allowed")
     actual = hashlib.sha256(diff.encode("utf-8")).hexdigest()
     if actual != patch_sha256:
         raise ValueError("patch_sha256 does not match diff")
@@ -191,9 +179,9 @@ def _validate_claims(value: Any) -> list[dict[str, str]]:
         if not evidence.startswith("git:") and re.search(r"/(?:blob|commit)/[0-9a-f]{40}(?:/|$)", evidence) is None:
             raise ValueError(f"claims[{index}].evidence must pin a commit SHA")
         claims.append({
-            "claim": _redact(_text(item["claim"], f"claims[{index}].claim", 4096)),
-            "evidence": _redact(evidence),
-            "release_scope": _redact(_text(item["release_scope"], f"claims[{index}].release_scope", 512)),
+            "claim": _text(item["claim"], f"claims[{index}].claim", 4096),
+            "evidence": evidence,
+            "release_scope": _text(item["release_scope"], f"claims[{index}].release_scope", 512),
         })
     return sorted(claims, key=lambda item: (item["claim"], item["evidence"], item["release_scope"]))
 
@@ -209,19 +197,19 @@ def _validate_checks(value: Any) -> list[dict[str, str]]:
         if status not in {"passed", "failed", "unavailable"}:
             raise ValueError(f"checks[{index}].status must be passed, failed, or unavailable")
         checks.append({
-            "command": _redact(_text(item["command"], f"checks[{index}].command", 2048)),
+            "command": _text(item["command"], f"checks[{index}].command", 2048),
             "status": status,
-            "explanation": _redact(_text(item["explanation"], f"checks[{index}].explanation", 4096)),
+            "explanation": _text(item["explanation"], f"checks[{index}].explanation", 4096),
         })
     return sorted(checks, key=lambda item: (item["command"], item["status"], item["explanation"]))
 
 
 def validate_artifact(value: dict[str, Any]) -> dict[str, Any]:
-    """Return a canonical, redacted artifact or raise ValueError for unsafe input."""
+    """Return a canonical artifact or raise ValueError for unsafe input."""
     value = _expect_object(value, "artifact")
     if set(value) != ROOT_FIELDS and set(value) != ROOT_FIELDS_WITH_DIGEST:
         _expect_fields(value, ROOT_FIELDS, "artifact")
-    if value["schema_version"] != SCHEMA_VERSION:
+    if type(value["schema_version"]) is not int or value["schema_version"] != SCHEMA_VERSION:
         raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
     if value["status"] not in {"proposed", "unavailable", "unsafe"}:
         raise ValueError("status must be proposed, unavailable, or unsafe")
@@ -289,7 +277,7 @@ def _validate_review_evidence(value: Any) -> list[dict[str, str]]:
         path = _text(item["path"], f"evidence[{index}].path", 1024)
         if "\\" in path or path.startswith("/") or any(part in {"", ".", ".."} for part in pathlib.PurePosixPath(path).parts):
             raise ValueError(f"evidence[{index}].path is unsafe")
-        evidence = _redact(_text(item["evidence"], f"evidence[{index}].evidence", 2048))
+        evidence = _text(item["evidence"], f"evidence[{index}].evidence", 2048)
         if not (evidence.startswith("github://") or evidence.startswith("https://") or evidence.startswith("git:")):
             raise ValueError(f"evidence[{index}].evidence must be an immutable evidence reference")
         if evidence.startswith("git:"):
@@ -307,14 +295,14 @@ def validate_agent_review(document: dict[str, Any]) -> dict[str, Any]:
     document = _expect_object(document, "review")
     if set(document) != REVIEW_FIELDS and set(document) != REVIEW_FIELDS_WITH_DIGEST:
         _expect_fields(document, REVIEW_FIELDS, "review")
-    if document["schema_version"] != SCHEMA_VERSION:
+    if type(document["schema_version"]) is not int or document["schema_version"] != SCHEMA_VERSION:
         raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
     if document["kind"] != "github-pr-docs-impact-review":
         raise ValueError("kind must be github-pr-docs-impact-review")
     verdict = _text(document["verdict"], "verdict", 64)
     if verdict not in REVIEW_VERDICTS:
         raise ValueError("unknown verdict")
-    rationale = _redact(_text(document["rationale"], "rationale", 4096))
+    rationale = _text(document["rationale"], "rationale", 4096)
     skill = _text(document["agent_skill"], "agent_skill", 256)
     if skill != "developer-experience-techdocs":
         raise ValueError("agent_skill must be developer-experience-techdocs")
@@ -322,6 +310,8 @@ def validate_agent_review(document: dict[str, Any]) -> dict[str, Any]:
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise ValueError("confidence must be a number between 0 and 1")
     proposal = document["proposal"]
+    if verdict == "proposal-ready" and proposal is None:
+        raise ValueError("proposal-ready requires a complete proposal")
     if verdict != "proposal-ready" and proposal is not None:
         raise ValueError("proposal is only allowed for proposal-ready verdict")
     normalized_proposal = validate_artifact(proposal) if proposal is not None else None
@@ -350,3 +340,21 @@ def validate_agent_review(document: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("review_sha256 does not match canonical review")
     review["review_sha256"] = digest
     return review
+
+
+def validate_review_decision(document: dict[str, Any]) -> dict[str, Any]:
+    """Validate a reviewer decision before the trusted builder derives its proposal."""
+    document = _expect_object(document, "review")
+    if set(document) != REVIEW_FIELDS:
+        _expect_fields(document, REVIEW_FIELDS, "review")
+    if type(document["schema_version"]) is not int or document["schema_version"] != SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
+    if document["kind"] != "github-pr-docs-impact-review" or document["proposal"] is not None:
+        raise ValueError("review decision must have no proposal")
+    verdict = _text(document["verdict"], "verdict", 64)
+    if verdict not in REVIEW_VERDICTS:
+        raise ValueError("unknown verdict")
+    confidence = document["confidence"]
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        raise ValueError("confidence must be a number between 0 and 1")
+    return {"schema_version": SCHEMA_VERSION, "kind": document["kind"], "identity": _validate_review_identity(document["identity"]), "agent_skill": _text(document["agent_skill"], "agent_skill", 256), "verdict": verdict, "rationale": _text(document["rationale"], "rationale", 4096), "evidence": _validate_review_evidence(document["evidence"]), "confidence": confidence, "proposal": None}

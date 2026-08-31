@@ -10,6 +10,7 @@ only after strict validation. An unavailable or incomplete adapter emits none.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -79,12 +80,13 @@ def validate_assignment(value: Any) -> dict[str, Any]:
         or len(evidence_bundle["files"]) > 100
     ):
         raise ValueError("evidence_bundle must be bounded and bound to the assignment SHA")
-    proposal_identity = evidence_bundle["proposal_identity"]
-    if not isinstance(proposal_identity, dict) or set(proposal_identity) != {
-        "repository_id", "repository", "pr_number", "base_sha", "head_sha",
-        "head_repository_id", "head_repository", "base_ref",
-    }:
-        raise ValueError("evidence_bundle proposal_identity must be complete")
+    try:
+        proposal_identity = docs_patch._validate_identity(evidence_bundle["proposal_identity"])
+    except ValueError as exc:
+        raise ValueError("evidence_bundle proposal identity must be complete and valid") from exc
+    for field, expected in (("repository_id", repository_id), ("repository", repository), ("pr_number", pr_number), ("head_sha", head_sha)):
+        if proposal_identity[field] != expected:
+            raise ValueError("evidence_bundle proposal identity must exactly match assignment identity")
     files: list[dict[str, str]] = []
     total_evidence_bytes = 0
     for item in evidence_bundle["files"]:
@@ -188,10 +190,12 @@ def run_adapter(
         return None
     try:
         candidate = json.loads(result.stdout)
-        review = docs_patch.validate_agent_review(candidate)
+        review = docs_patch.validate_review_decision(candidate)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
     if review["identity"] != assignment["identity"] or review["agent_skill"] != assignment["agent_skill"]:
+        return None
+    if review["proposal"] is not None:
         return None
     return review
 
@@ -206,10 +210,23 @@ def review_assignment_bytes(
     return run_adapter(assignment, adapter_command, skill_dir, timeout_seconds)
 
 
-def write_artifact(artifact_file: pathlib.Path, review: dict[str, Any]) -> None:
-    """Atomically place only canonical review JSON in the isolated outbox."""
+def validate_final_candidate(raw_assignment: bytes, candidate: dict[str, Any]) -> dict[str, Any]:
+    """Accept only the final review envelope produced after trusted Git derivation."""
+    assignment = load_assignment_bytes(raw_assignment)
+    if not isinstance(candidate, dict) or set(candidate) != {"schema_version", "snapshot_sha256", "artifact"} or type(candidate["schema_version"]) is not int or candidate["schema_version"] != 1 or candidate["snapshot_sha256"] != hashlib.sha256(raw_assignment).hexdigest():
+        raise ValueError("candidate must be one final assignment-bound envelope")
+    review = docs_patch.validate_agent_review(candidate["artifact"])
+    if review["identity"] != assignment["identity"] or review["agent_skill"] != assignment["agent_skill"]:
+        raise ValueError("candidate does not match assignment")
+    if review["verdict"] == "proposal-ready" and (review["proposal"] is None or review["proposal"]["identity"] != assignment["evidence_bundle"]["proposal_identity"]):
+        raise ValueError("candidate proposal identity does not exactly match assignment")
+    return {"schema_version": 1, "snapshot_sha256": candidate["snapshot_sha256"], "artifact": review}
+
+
+def write_artifact(artifact_file: pathlib.Path, candidate: dict[str, Any]) -> None:
+    """Atomically place only a canonical candidate envelope in the isolated outbox."""
     artifact_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    payload = docs_patch.canonical_json(review) + "\n"
+    payload = docs_patch.canonical_json(candidate) + "\n"
     descriptor, temporary_name = tempfile.mkstemp(prefix=".docs-review-", suffix=".tmp", dir=artifact_file.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -247,6 +264,10 @@ def main() -> int:
     parser.add_argument("--artifact-file", default=os.environ.get("GC_TECHDOCS_ARTIFACT_FILE", ""))
     parser.add_argument("--adapter-command", default=os.environ.get("GC_TECHDOCS_ADAPTER_COMMAND", ""))
     parser.add_argument("--skill-dir", default=os.environ.get("GC_TECHDOCS_SKILL_DIR", ""))
+    parser.add_argument("--workspace", default=os.environ.get("GC_TECHDOCS_WORKSPACE", ""))
+    parser.add_argument("--generated-at", default=os.environ.get("GC_TECHDOCS_GENERATED_AT", ""))
+    parser.add_argument("--claims-json", default=os.environ.get("GC_TECHDOCS_CLAIMS_JSON", "[]"))
+    parser.add_argument("--checks-json", default=os.environ.get("GC_TECHDOCS_CHECKS_JSON", "[]"))
     parser.add_argument(
         "--adapter-timeout-seconds",
         type=float,
@@ -257,10 +278,11 @@ def main() -> int:
         parser.error("--assignment-file and --artifact-file are required")
     artifact_file = pathlib.Path(args.artifact_file)
     try:
-        reject_credentials()
         remove_artifact(artifact_file)
+        reject_credentials()
+        raw_assignment = pathlib.Path(args.assignment_file).read_bytes()
         review = review_assignment_bytes(
-            pathlib.Path(args.assignment_file).read_bytes(),
+            raw_assignment,
             args.adapter_command,
             pathlib.Path(args.skill_dir),
             args.adapter_timeout_seconds,
@@ -268,10 +290,18 @@ def main() -> int:
         if review is None:
             print(docs_patch.canonical_json({"status": "unavailable"}))
             return 0
-        write_artifact(artifact_file, review)
+        if review["verdict"] != "proposal-ready":
+            candidate = validate_final_candidate(raw_assignment, {"schema_version": 1, "snapshot_sha256": hashlib.sha256(raw_assignment).hexdigest(), "artifact": review})
+        elif not args.workspace or not args.generated_at:
+            print(docs_patch.canonical_json({"status": "unavailable"}))
+            return 0
+        else:
+            import github_intake_docs_candidate_builder as builder
+            candidate = builder.build_candidate(raw_assignment, pathlib.Path(args.workspace), generated_at=args.generated_at, claims=json.loads(args.claims_json), checks=json.loads(args.checks_json), review=review)
+        write_artifact(artifact_file, candidate)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    print(docs_patch.canonical_json({"review_sha256": review["review_sha256"], "status": "completed"}))
+    print(docs_patch.canonical_json({"review_sha256": candidate["artifact"]["review_sha256"], "status": "completed"}))
     return 0
 
 
