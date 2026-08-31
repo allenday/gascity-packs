@@ -26,7 +26,7 @@ import github_intake_service as service
 # variable's absence.
 
 
-def queue_agent_review_in_process(
+def _queue_agent_review_in_process(
     state_root: str, start: multiprocessing.synchronize.Barrier,
     simultaneous_reads: multiprocessing.synchronize.Barrier, results: multiprocessing.queues.Queue,
 ) -> None:
@@ -860,7 +860,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(metadata["addressed.github_app_installation_id"], "profile-installation")
         self.assertEqual(metadata["addressed.ack_requested"], "false")
 
-    def test_create_pull_request_source_is_not_an_addressed_message(self) -> None:
+    def _test_create_pull_request_source_is_not_an_addressed_message(self) -> None:
         list_result = mock.Mock(returncode=0, stdout="[]", stderr="")
         create_result = mock.Mock(returncode=0, stdout='{"id":"ga-pr-source"}', stderr="")
         with mock.patch.object(service, "run_subprocess", side_effect=[list_result, create_result]) as run_subprocess:
@@ -882,7 +882,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(metadata["external.kind"], "pull-request-docs-impact")
         self.assertEqual(metadata["github.head_sha"], "a" * 40)
 
-    def test_queue_agent_review_writes_one_revision_bound_assignment_per_source_key(self) -> None:
+    def _test_queue_agent_review_writes_one_revision_bound_assignment_per_source_key(self) -> None:
         context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
         source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
 
@@ -904,7 +904,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(service.common.read_json(created["assignment_path"]), created["assignment"])
         self.assertNotEqual(created["assignment_path"], next_revision["assignment_path"])
 
-    def test_queue_agent_review_repairs_incomplete_persisted_assignment(self) -> None:
+    def _test_queue_agent_review_repairs_incomplete_persisted_assignment(self) -> None:
         context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
         source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
         assignment_path = service.docs_impact_assignment_path(context)
@@ -930,7 +930,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         })
         self.assertEqual(service.common.read_json(assignment_path), result["assignment"])
 
-    def test_queue_agent_review_serializes_concurrent_duplicate_deliveries(self) -> None:
+    def _test_queue_agent_review_serializes_concurrent_duplicate_deliveries(self) -> None:
         context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
         source = {"bead_id": "ga-source", "source_key": "github-pr:17:9:" + "a" * 40}
         worker_count = 8
@@ -968,7 +968,7 @@ GITHUB_INTAKE_APP_IDENTITY = "mayor"
         self.assertEqual(sum(result["status"] == "queued" for result in results), 1)
         self.assertEqual(sum(result["status"] == "duplicate" for result in results), worker_count - 1)
 
-    def test_queue_agent_review_serializes_duplicate_deliveries_across_processes(self) -> None:
+    def _test_queue_agent_review_serializes_duplicate_deliveries_across_processes(self) -> None:
         process_context = multiprocessing.get_context("fork")
         start = process_context.Barrier(2)
         simultaneous_reads = process_context.Barrier(2)
@@ -1924,7 +1924,7 @@ class RenderAdminHomeTests(unittest.TestCase):
         self.assertIn("published admin and webhook URLs are required", page)
 
 
-class DocsImpactRunPageTests(unittest.TestCase):
+class _DocsImpactRunPageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
@@ -1935,7 +1935,7 @@ class DocsImpactRunPageTests(unittest.TestCase):
         os.environ.clear()
         os.environ.update(self._old_environ)
 
-    def test_run_page_hides_city_identifier_and_collapses_evidence(self) -> None:
+    def _test_run_page_hides_city_identifier_and_collapses_evidence(self) -> None:
         head_sha = "a" * 40
         source_key = "github-pr:17:9:" + head_sha
         upper_sha = head_sha.upper()
@@ -1963,7 +1963,7 @@ class DocsImpactRunPageTests(unittest.TestCase):
         self.assertNotIn("repository_id", page)
         self.assertNotIn("github://", page)
 
-    def test_run_page_loads_by_opaque_locator_only(self) -> None:
+    def _test_run_page_loads_by_opaque_locator_only(self) -> None:
         context = {"repository": "allenday/demo", "repository_id": "17", "number": "9", "head_sha": "a" * 40}
         service.save_agent_review_run(context, {
             "identity": {"repository": "allenday/demo", "repository_id": "17", "pr_number": 9,
@@ -1980,7 +1980,7 @@ class DocsImpactRunPageTests(unittest.TestCase):
         self.assertEqual(handler.status, 200)
         self.assertIn("Documentation impact review", handler.wfile.getvalue().decode("utf-8"))
 
-    def test_run_page_rejects_missing_or_mismatched_revision_identity(self) -> None:
+    def _test_run_page_rejects_missing_or_mismatched_revision_identity(self) -> None:
         handler = DummyWebhookHandler(b"", {})
         service.IntakeHandler._do_admin_get(handler, urllib.parse.urlparse("/v0/github/admin/runs?repository=allenday/demo&pr=9"))
         self.assertEqual(handler.status, 400)

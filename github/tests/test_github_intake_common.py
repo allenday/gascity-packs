@@ -52,7 +52,6 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         manifest = common.build_manifest()
 
         self.assertEqual(manifest["url"], "https://admin.example.com")
-        self.assertEqual(common.admin_dashboard_url(), "https://admin.example.com/v0/github/admin")
         self.assertEqual(
             manifest["hook_attributes"]["url"],
             "https://hook.example.com/v0/github/webhook",
@@ -63,7 +62,7 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         )
         self.assertEqual(
             manifest["setup_url"],
-            "https://admin.example.com/v0/github/admin",
+            "https://admin.example.com",
         )
         self.assertIn("issue_comment", manifest["default_events"])
         self.assertIn("issues", manifest["default_events"])
@@ -139,20 +138,14 @@ class GitHubIntakeCommonTests(unittest.TestCase):
         )
 
     @mock.patch.object(common, "github_api_request")
-    def test_docs_impact_check_links_to_an_opaque_run_locator(self, request: mock.Mock) -> None:
+    def test_docs_impact_check_has_no_deployment_specific_details_link(self, request: mock.Mock) -> None:
         request.return_value = {"id": 9}
-        os.environ["GITHUB_INTAKE_ADMIN_PUBLIC_URL"] = "https://city.example"
-
         common.create_check_run_with_token(
             "installation-token", "allenday", "repo", "a" * 40, "Gas City / docs-impact", "in_progress", None,
             {"title": "Evaluating", "summary": "Working."},
-            details_url=common.docs_impact_run_url("docs-impact-run-0123456789abcdef01234567"),
         )
 
-        self.assertEqual(
-            request.call_args.kwargs["payload"]["details_url"],
-            "https://city.example/v0/github/admin/runs?run=docs-impact-run-0123456789abcdef01234567",
-        )
+        self.assertNotIn("details_url", request.call_args.kwargs["payload"])
 
     @mock.patch.object(common, "github_api_request")
     def test_check_reconciliation_rejects_missing_or_malformed_pages(self, request: mock.Mock) -> None:

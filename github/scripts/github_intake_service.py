@@ -2709,33 +2709,6 @@ class IntakeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             text_response(self, HTTPStatus.OK, render_admin_home(), "text/html; charset=utf-8")
             return
-        if parsed.path == "/v0/github/admin/runs":
-            locator = docs_impact_run_locator_from_query(parsed.query)
-            if locator is None:
-                text_response(self, HTTPStatus.BAD_REQUEST, "invalid run locator\n", "text/plain; charset=utf-8")
-                return
-            record = load_docs_impact_run_locator(locator)
-            if record is None:
-                text_response(self, HTTPStatus.NOT_FOUND, "documentation impact run not found\n", "text/plain; charset=utf-8")
-                return
-            text_response(self, HTTPStatus.OK, render_docs_impact_run(record), "text/html; charset=utf-8")
-            return
-        if parsed.path == "/v0/github/admin/docs-patch":
-            source_key = urllib.parse.parse_qs(parsed.query).get("source_key", [""])[0]
-            if not source_key:
-                text_response(self, HTTPStatus.BAD_REQUEST, "missing source_key\n", "text/plain; charset=utf-8")
-                return
-            try:
-                with open(docs_patch_artifact_path(source_key), encoding="utf-8") as handle:
-                    artifact = json.load(handle)
-            except (OSError, json.JSONDecodeError):
-                text_response(self, HTTPStatus.NOT_FOUND, "documentation patch not found\n", "text/plain; charset=utf-8")
-                return
-            diff = html.escape(str(artifact.get("diff", "")))
-            title = html.escape(str(artifact.get("title", "Documentation patch")))
-            body = f"<!doctype html><title>{title}</title><h1>{title}</h1><p>Apply this diff to the pull request branch, then push it for a fresh evaluation.</p><pre><code>{diff}</code></pre>"
-            text_response(self, HTTPStatus.OK, body, "text/html; charset=utf-8")
-            return
         if parsed.path == "/v0/github/status":
             json_response(self, HTTPStatus.OK, common.build_status_snapshot(limit=20))
             return
