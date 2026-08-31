@@ -102,9 +102,10 @@ class DocsImpactTests(unittest.TestCase):
         self.assertEqual(create.call_args.args[4], branch)
         comment.assert_called_once_with(
             "token", "allenday", "demo", "9",
-            "Gas City opened [#31](https://github.com/allenday/demo/pull/31) as a documentation follow-up for this revision.\n\n"
-            "Review and merge #31 first. It targets this PR branch, preserves this PR's review context, "
-            "and triggers a fresh `Gas City / docs-impact` check. Do not close this PR.",
+            "I've opened [#31](https://github.com/allenday/demo/pull/31) as a documentation follow-up for this revision.\n\n"
+            "Review and merge #31, and it will trigger a fresh `Gas City / docs-impact` check while preserving "
+            "this PR's review context.\n\n"
+            "After it completes, the `Gas City / docs-impact` check will pass here and you can merge this PR.",
         )
         self.assertEqual(result["comment_url"], "https://github.com/allenday/demo/pull/9#issuecomment-1")
     def setUp(self) -> None:
