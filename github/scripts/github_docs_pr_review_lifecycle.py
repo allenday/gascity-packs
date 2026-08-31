@@ -53,7 +53,7 @@ def begin(
     if existing is not None:
         if existing.identity != identity:
             raise ValueError("existing run identity differs from delivery identity")
-        action = "ensure_terminal_check" if existing.state in {"terminal", "stale"} else "ensure_check"
+        action = "ensure_stale_check" if existing.state == "stale" else "ensure_terminal_check" if existing.state == "terminal" else "ensure_check"
         return Transition(existing, (action,))
     if not identity:
         raise ValueError("review identity is required")
@@ -81,12 +81,14 @@ def reconcile(
     lease_seconds: float = 300,
 ) -> Transition:
     """Advance a run at most once, safely after duplicate work or restart."""
-    if run.state in {"terminal", "stale"}:
+    if run.state == "stale":
+        return Transition(run, ("ensure_stale_check",))
+    if run.state == "terminal":
         return Transition(run, ("ensure_terminal_check",))
     if not head_is_current:
         return Transition(
             _terminal(run, "stale"),
-            ("ensure_terminal_check",),
+            ("ensure_stale_check",),
         )
     if now >= run.deadline_at:
         return Transition(

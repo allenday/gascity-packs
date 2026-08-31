@@ -2,7 +2,9 @@
 
 Use documentation bootstrap when a repository's default branch has incomplete
 or absent developer documentation. It complements, rather than replaces, the
-pull-request reviewer: both produce the same durable documentation-gap record.
+pull-request reviewer. A PR reviewer emits a documentation-gap record only for
+`docs-change-required`; `proposal-ready` is resolved by its stacked follow-up
+pull request.
 
 ## Trust and identity
 
@@ -19,6 +21,12 @@ Each accepted gap uses `github-docs-gap.v1` with these stable fields:
 - affected code surface and bounded evidence paths
 - gap classification and rationale
 - deterministic gap key
+
+The gap key is the SHA-256 digest of the schema version, repository ID,
+normalized affected surface, and gap classification, separated by NUL bytes.
+It deliberately excludes the reviewed SHA so a default-branch inventory and a
+PR review of the same unresolved gap converge on one remediation record. Each
+record still carries the immutable evidence SHA that established it.
 
 The coordinator persists this record before any external action. GitHub issues,
 City beads, and writer pull requests are projections of the record, not the
@@ -47,11 +55,13 @@ remains the merge gate.
 ## Dependency interface
 
 Bootstrap uses the durable-dispatch and recovery semantics defined by the docs
-PR reviewer lifecycle, but it does not reuse PR Check Run state. It applies the
-proposal-authority evidence-completeness gate before every issue, bead, branch,
-or PR projection. If those dependencies expose a generic dispatcher adapter,
-bootstrap consumes it; otherwise it defines a narrow bootstrap adapter with the
-same persisted-before-action and retry semantics.
+PR reviewer lifecycle, but it does not reuse PR Check Run state. It maps an
+accepted `docs-change-required` PR result into `github-docs-gap.v1`; it does
+not treat a PR run identity as a gap key. It applies the proposal-authority
+evidence-completeness gate before every issue, bead, branch, or PR projection.
+If those dependencies expose a generic dispatcher adapter, bootstrap consumes
+it; otherwise it defines a narrow bootstrap adapter with the same
+persisted-before-action and retry semantics.
 
 ## Acceptance tests
 

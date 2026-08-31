@@ -80,4 +80,4 @@ class DocsPrReviewLifecycleTests(unittest.TestCase):
 
         self.assertEqual(stale.run.state, "stale")
         self.assertEqual(stale.run.conclusion, "stale")
-        self.assertEqual(stale.actions, ("ensure_terminal_check",))
+        self.assertEqual(stale.actions, ("ensure_stale_check",))

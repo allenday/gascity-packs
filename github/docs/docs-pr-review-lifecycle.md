@@ -38,9 +38,10 @@ and terminal conclusion.
 
 Duplicate webhook deliveries load that same record. They do not create another
 Check Run or another independent review. A head change makes the old record
-stale: before any GitHub Check write, the reconciler confirms that the current
-PR head still equals the stored SHA. A stale record completes only as stale and
-never publishes a candidate for the new revision.
+stale: before publishing a non-stale result, the reconciler confirms that the
+current PR head still equals the stored SHA. A stale record completes only as
+stale by updating its already-created Check Run on the old SHA; it never
+publishes a candidate for the new revision.
 
 ## Dispatch and recovery
 
@@ -68,8 +69,10 @@ Adapters execute the actions emitted by
 
 - `ensure_check` creates or adopts the Check Run by a durable external ID.
 - `dispatch` sends the already-persisted immutable assignment.
-- `ensure_terminal_check` completes or adopts the persisted terminal Check Run,
+- `ensure_terminal_check` completes or adopts a non-stale terminal Check Run,
   after the current-head check.
+- `ensure_stale_check` completes or adopts the already-created stale Check Run
+  on its stored SHA. It must not require the current-head check.
 
 Persist the transitioned run before performing an external action, and make
 each action idempotent. The `ensure_*` actions are deliberately emitted again
@@ -79,8 +82,10 @@ performs the missing write. The pack does not prescribe a database, queue,
 scheduler, or retry interval.
 
 The credentials that create and update Check Runs are confined to the trusted
-intake/reconciler boundary. This contract does not authorize GitHub issue,
-comment, pull-request, branch, or deployment mutations.
+intake/reconciler boundary. This lifecycle contract governs only Check Run and
+dispatch state. A separate authority-gated projection capability may create a
+bot-owned follow-up branch and pull request; lifecycle itself does not
+authorize GitHub issue, comment, pull-request, branch, or deployment mutations.
 
 ## Verification
 
