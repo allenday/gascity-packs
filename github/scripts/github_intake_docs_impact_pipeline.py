@@ -126,7 +126,7 @@ def wait_for_sidecar_review(
 def configured_wait_seconds() -> float:
     raw = os.environ.get(
         "GC_GITHUB_DOCS_REVIEW_WAIT_SECONDS",
-        os.environ.get("GC_GITHUB_DOCS_PATCH_WAIT_SECONDS", "30"),
+        os.environ.get("GC_GITHUB_DOCS_PATCH_WAIT_SECONDS", "45"),
     )
     try:
         return max(0.0, float(raw))
