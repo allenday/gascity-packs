@@ -127,9 +127,10 @@ def create_followup_pull_request(token: str, context: dict[str, str], review: di
         if not url or not number:
             raise common.GitHubAPIError("created follow-up pull request did not contain URL and number")
         comment_body = (
-            f"Gas City opened [#{number}]({url}) as a documentation follow-up for this revision.\n\n"
-            f"Review and merge #{number} first. It targets this PR branch, preserves this PR's review context, "
-            "and triggers a fresh `Gas City / docs-impact` check. Do not close this PR."
+            f"I've opened [#{number}]({url}) as a documentation follow-up for this revision.\n\n"
+            f"Review and merge #{number}, and it will trigger a fresh `Gas City / docs-impact` check while preserving "
+            "this PR's review context.\n\n"
+            "After it completes, the `Gas City / docs-impact` check will pass here and you can merge this PR."
         )
         try:
             comment = common.post_issue_comment_with_token(
