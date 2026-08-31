@@ -85,6 +85,11 @@ def address_results_dir() -> str:
     return os.path.join(data_dir(), "address-results")
 
 
+def docs_review_runs_dir() -> str:
+    """Shared durable state location for the optional docs-impact runtime."""
+    return os.path.join(data_dir(), "docs-review-runs")
+
+
 def config_path() -> str:
     return os.path.join(data_dir(), "config.json")
 
@@ -433,20 +438,6 @@ def admin_url() -> str:
     return published_service_url(ADMIN_SERVICE_NAME)
 
 
-def admin_dashboard_url() -> str:
-    """Return the GitHub intake dashboard route, when the admin service is published."""
-    admin = admin_url()
-    return admin.rstrip("/") + "/v0/github/admin" if admin else ""
-
-
-def docs_impact_run_url(run_locator: str) -> str:
-    """Return the public opaque locator for a docs-impact evidence run."""
-    dashboard = admin_dashboard_url()
-    if not dashboard or re.fullmatch(r"docs-impact-run-[0-9a-f]{24}", run_locator) is None:
-        return ""
-    return dashboard.rstrip("/") + "/runs?" + urllib.parse.urlencode({"run": run_locator})
-
-
 def webhook_url() -> str:
     """Public webhook base URL: deployment override first, then publication."""
     override = workspace_env_value("GITHUB_INTAKE_WEBHOOK_PUBLIC_URL")
@@ -472,7 +463,7 @@ def build_manifest() -> dict[str, Any]:
         "hook_attributes": {"url": hook_url, "active": True},
         "redirect_url": admin.rstrip("/") + "/v0/github/app/manifest/callback",
         "callback_urls": [admin.rstrip("/") + "/v0/github/app/manifest/callback"],
-        "setup_url": admin_dashboard_url(),
+        "setup_url": admin,
         "description": "Workspace-hosted GitHub comment and event intake for Gas City",
         "public": False,
         "default_permissions": {
@@ -1139,6 +1130,87 @@ def github_api_request(
     raise GitHubAPIError(f"{method.upper()} {url} returned non-object JSON")
 
 
+def github_api_list_request(
+    method: str,
+    path: str,
+    *,
+    bearer_token: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read a GitHub list endpoint without weakening object-only API callers."""
+    if path.startswith("http://") or path.startswith("https://"):
+        url = path
+    else:
+        url = urllib.parse.urljoin(GITHUB_API_BASE.rstrip("/") + "/", path.lstrip("/"))
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "gas-city-github/0.1",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+    }
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    request = urllib.request.Request(url, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise GitHubAPIError(f"{method.upper()} {url} failed with {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+    except urllib.error.URLError as exc:
+        raise GitHubAPIError(f"{method.upper()} {url} failed: {exc}") from exc
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise GitHubAPIError(f"{method.upper()} {url} returned non-list JSON")
+    return data
+
+
+def github_api_paginated_list_request(
+    method: str,
+    path: str,
+    *,
+    bearer_token: str | None = None,
+    per_page: int = 100,
+) -> list[dict[str, Any]]:
+    """Read every page of a bounded GitHub list endpoint before deciding."""
+    if per_page <= 0 or per_page > 100:
+        raise ValueError("per_page must be between 1 and 100")
+    result: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        separator = "&" if "?" in path else "?"
+        values = github_api_list_request(
+            method, f"{path}{separator}per_page={per_page}&page={page}", bearer_token=bearer_token,
+        )
+        result.extend(values)
+        if len(values) < per_page:
+            return result
+        page += 1
+
+
+def github_api_paginated_object_list_request(
+    method: str,
+    path: str,
+    field: str,
+    *,
+    bearer_token: str | None = None,
+    per_page: int = 100,
+) -> list[dict[str, Any]]:
+    """Read every page of an object-wrapped GitHub list (for Check Runs)."""
+    if per_page <= 0 or per_page > 100:
+        raise ValueError("per_page must be between 1 and 100")
+    result: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        separator = "&" if "?" in path else "?"
+        response = github_api_request(
+            method, f"{path}{separator}per_page={per_page}&page={page}", bearer_token=bearer_token,
+        )
+        values = response.get(field)
+        if not isinstance(values, list) or not all(isinstance(value, dict) for value in values):
+            raise GitHubAPIError(f"{method.upper()} {path} returned invalid {field}")
+        result.extend(values)
+        if len(values) < per_page:
+            return result
+        page += 1
+
+
 def exchange_manifest_code(code: str) -> dict[str, Any]:
     return github_api_request("POST", f"/app-manifests/{urllib.parse.quote(code)}/conversions")
 
@@ -1238,199 +1310,6 @@ def post_issue_comment(
     )
 
 
-def post_issue_comment_with_token(
-    token: str,
-    owner: str,
-    repo: str,
-    issue_number: str,
-    body: str,
-) -> dict[str, Any]:
-    """Post as the already-authorized GitHub App installation identity."""
-    return github_api_request(
-        "POST",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues/{issue_number}/comments",
-        payload={"body": body},
-        bearer_token=token,
-    )
-
-
-def create_check_run(
-    app_cfg: dict[str, Any],
-    installation_id: str,
-    owner: str,
-    repo: str,
-    head_sha: str,
-    name: str,
-    status: str,
-    conclusion: str | None,
-    output: dict[str, Any],
-    details_url: str = "",
-) -> dict[str, Any]:
-    token = create_installation_token(app_cfg, installation_id)
-    return create_check_run_with_token(token, owner, repo, head_sha, name, status, conclusion, output, details_url)
-
-
-def create_check_run_with_token(
-    token: str,
-    owner: str,
-    repo: str,
-    head_sha: str,
-    name: str,
-    status: str,
-    conclusion: str | None,
-    output: dict[str, Any],
-    details_url: str = "",
-    external_id: str = "",
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "name": name,
-        "head_sha": head_sha,
-        "status": status,
-        "output": output,
-    }
-    if details_url:
-        payload["details_url"] = details_url
-    elif admin_dashboard_url():
-        payload["details_url"] = admin_dashboard_url()
-    if conclusion:
-        payload["conclusion"] = conclusion
-    if external_id:
-        payload["external_id"] = external_id
-    return github_api_request(
-        "POST",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs",
-        payload=payload,
-        bearer_token=token,
-    )
-
-
-def find_check_run_by_external_id_with_token(
-    token: str, owner: str, repo: str, head_sha: str, external_id: str,
-) -> dict[str, Any] | None:
-    """Find one Check Run by its immutable SHA and opaque external ID."""
-    total_count: int | None = None
-    page = 1
-    while total_count is None or (page - 1) * 100 < total_count:
-        response = github_api_request(
-            "GET",
-            f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(head_sha)}"
-            f"/check-runs?per_page=100&page={page}",
-            bearer_token=token,
-        )
-        if not isinstance(response, dict):
-            raise GitHubAPIError("check run reconciliation returned a non-object page")
-        page_total = response.get("total_count")
-        check_runs = response.get("check_runs")
-        if (
-            type(page_total) is not int
-            or not 0 <= page_total <= MAX_CHECK_RUN_RECONCILIATION_COUNT
-            or not isinstance(check_runs, list)
-            or any(not isinstance(check_run, dict) for check_run in check_runs)
-        ):
-            raise GitHubAPIError("check run reconciliation returned an invalid page")
-        if total_count is None:
-            total_count = page_total
-        elif page_total != total_count:
-            raise GitHubAPIError("check run reconciliation changed total_count between pages")
-        expected_count = min(100, total_count - (page - 1) * 100)
-        if len(check_runs) != expected_count:
-            raise GitHubAPIError("check run reconciliation returned an incomplete page")
-        for check_run in check_runs:
-            if check_run.get("external_id") == external_id:
-                return check_run
-        page += 1
-    return None
-
-
-def update_check_run_with_token(
-    token: str,
-    owner: str,
-    repo: str,
-    check_run_id: str | int,
-    status: str,
-    conclusion: str | None,
-    output: dict[str, Any],
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"status": status, "output": output}
-    if conclusion:
-        payload["conclusion"] = conclusion
-    return github_api_request(
-        "PATCH",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs/{check_run_id}",
-        payload=payload,
-        bearer_token=token,
-    )
-
-
-def list_pull_request_files_with_token(token: str, owner: str, repo: str, number: str) -> list[dict[str, Any]]:
-    """Return up to 100 changed files; a full page is intentionally inconclusive."""
-    path = (
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
-        f"/pulls/{urllib.parse.quote(str(number))}/files?per_page=100&page=1"
-    )
-    if path.startswith("http://") or path.startswith("https://"):
-        url = path
-    else:
-        url = urllib.parse.urljoin(GITHUB_API_BASE.rstrip("/") + "/", path.lstrip("/"))
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "gas-city-github/0.1",
-            "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        raw = exc.read()
-        message = raw.decode("utf-8", errors="replace")
-        raise GitHubAPIError(f"GET {url} failed with {exc.code}: {message}") from exc
-    except urllib.error.URLError as exc:
-        raise GitHubAPIError(f"GET {url} failed: {exc}") from exc
-    data = json.loads(raw.decode("utf-8")) if raw else []
-    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
-        raise GitHubAPIError(f"GET {url} returned non-list JSON")
-    return data
-
-
-def compare_commits_with_token(
-    token: str, owner: str, repo: str, base_sha: str, head_sha: str,
-) -> list[dict[str, Any]]:
-    """Return textual file evidence from one immutable commit comparison."""
-    base_sha = str(base_sha).strip().lower()
-    head_sha = str(head_sha).strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
-        raise GitHubAPIError("commit comparison requires exact base and head SHAs")
-    basehead = urllib.parse.quote(f"{base_sha}...{head_sha}", safe=".")
-    comparison = github_api_request(
-        "GET",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/compare/{basehead}?per_page=100&page=1",
-        bearer_token=token,
-    )
-    files = comparison.get("files")
-    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
-        raise GitHubAPIError("commit comparison did not contain a valid files list")
-    return files
-
-
-def pull_request_head_sha_with_token(token: str, owner: str, repo: str, number: str) -> str:
-    """Fetch the current PR head SHA through the authenticated GitHub boundary."""
-    pull_request = github_api_request(
-        "GET",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls/{urllib.parse.quote(str(number))}",
-        bearer_token=token,
-    )
-    head = pull_request.get("head")
-    sha = str(head.get("sha", "")).strip().lower() if isinstance(head, dict) else ""
-    if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
-        raise GitHubAPIError("pull request response did not contain a valid head SHA")
-    return sha
-
-
 def create_pull_request(
     app_cfg: dict[str, Any],
     installation_id: str,
@@ -1455,16 +1334,126 @@ def create_pull_request(
     )
 
 
-def create_pull_request_with_token(
-    token: str, owner: str, repo: str, title: str, head: str, base: str, body: str,
+def get_pull_request(app_cfg: dict[str, Any], installation_id: str, owner: str, repo: str, number: int) -> dict[str, Any]:
+    """Read the current PR facts using an installation token."""
+    token = create_installation_token(app_cfg, installation_id)
+    return github_api_request("GET", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls/{number}", bearer_token=token)
+
+
+def create_check_run(app_cfg: dict[str, Any], installation_id: str, owner: str, repo: str, head_sha: str, external_id: str, status: str, conclusion: str | None, output: dict[str, str]) -> dict[str, Any]:
+    token = create_installation_token(app_cfg, installation_id)
+    payload: dict[str, Any] = {"name": "Gas City / docs-impact", "head_sha": head_sha, "external_id": external_id, "status": status, "output": output}
+    if conclusion is not None:
+        payload["conclusion"] = conclusion
+    return github_api_request("POST", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs", payload=payload, bearer_token=token)
+
+
+def create_check_run_with_token(
+    token: str,
+    owner: str,
+    repo: str,
+    head_sha: str,
+    name: str,
+    status: str,
+    conclusion: str | None,
+    output: dict[str, Any],
+    details_url: str = "",
+    external_id: str = "",
 ) -> dict[str, Any]:
-    """Create a pull request with the already-scoped installation token."""
-    return github_api_request(
-        "POST",
-        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls",
-        payload={"title": title, "head": head, "base": base, "body": body},
-        bearer_token=token,
+    """Create a Check Run with a pre-authorized installation token.
+
+    The optional details URL is caller-controlled; the reviewer deliberately
+    does not synthesize deployment-specific run links.
+    """
+    payload: dict[str, Any] = {"name": name, "head_sha": head_sha, "status": status, "output": output}
+    if conclusion is not None:
+        payload["conclusion"] = conclusion
+    if details_url:
+        payload["details_url"] = details_url
+    if external_id:
+        payload["external_id"] = external_id
+    return github_api_request("POST", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs", payload=payload, bearer_token=token)
+
+
+def update_check_run(app_cfg: dict[str, Any], installation_id: str, owner: str, repo: str, check_id: str, conclusion: str, output: dict[str, str]) -> dict[str, Any]:
+    token = create_installation_token(app_cfg, installation_id)
+    return github_api_request("PATCH", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs/{urllib.parse.quote(check_id)}", payload={"status": "completed", "conclusion": conclusion, "output": output}, bearer_token=token)
+
+
+def update_check_run_with_token(
+    token: str,
+    owner: str,
+    repo: str,
+    check_run_id: str | int,
+    status: str,
+    conclusion: str | None,
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"status": status, "output": output}
+    if conclusion is not None:
+        payload["conclusion"] = conclusion
+    return github_api_request("PATCH", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/check-runs/{check_run_id}", payload=payload, bearer_token=token)
+
+
+def find_check_run(app_cfg: dict[str, Any], installation_id: str, owner: str, repo: str, head_sha: str, external_id: str) -> dict[str, Any] | None:
+    token = create_installation_token(app_cfg, installation_id)
+    checks = github_api_paginated_object_list_request(
+        "GET", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(head_sha)}/check-runs", "check_runs", bearer_token=token,
     )
+    for check in checks:
+        if isinstance(check, dict) and str(check.get("external_id", "")) == external_id:
+            return check
+    return None
+
+
+def find_check_run_by_external_id_with_token(
+    token: str, owner: str, repo: str, head_sha: str, external_id: str,
+) -> dict[str, Any] | None:
+    """Reconcile Check Runs page-by-page without accepting partial results."""
+    total_count: int | None = None
+    page = 1
+    while total_count is None or (page - 1) * 100 < total_count:
+        response = github_api_request(
+            "GET",
+            f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(head_sha)}/check-runs?per_page=100&page={page}",
+            bearer_token=token,
+        )
+        page_total = response.get("total_count") if isinstance(response, dict) else None
+        check_runs = response.get("check_runs") if isinstance(response, dict) else None
+        if (
+            type(page_total) is not int
+            or not 0 <= page_total <= MAX_CHECK_RUN_RECONCILIATION_COUNT
+            or not isinstance(check_runs, list)
+            or any(not isinstance(check_run, dict) for check_run in check_runs)
+        ):
+            raise GitHubAPIError("check run reconciliation returned an invalid page")
+        if total_count is None:
+            total_count = page_total
+        elif page_total != total_count:
+            raise GitHubAPIError("check run reconciliation changed total_count between pages")
+        expected_count = min(100, total_count - (page - 1) * 100)
+        if len(check_runs) != expected_count:
+            raise GitHubAPIError("check run reconciliation returned an incomplete page")
+        for check_run in check_runs:
+            if check_run.get("external_id") == external_id:
+                return check_run
+        page += 1
+    return None
+
+
+def compare_commits_with_token(
+    token: str, owner: str, repo: str, base_sha: str, head_sha: str,
+) -> list[dict[str, Any]]:
+    """Return immutable comparison evidence for exact base and head revisions."""
+    base_sha, head_sha = str(base_sha).strip().lower(), str(head_sha).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+        raise GitHubAPIError("commit comparison requires exact base and head SHAs")
+    basehead = urllib.parse.quote(f"{base_sha}...{head_sha}", safe=".")
+    response = github_api_request("GET", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/compare/{basehead}?per_page=100&page=1", bearer_token=token)
+    files = response.get("files")
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise GitHubAPIError("commit comparison did not contain a valid files list")
+    return files
 
 
 def repository_git_url(repository_full_name: str) -> str:
@@ -1477,40 +1466,9 @@ def git_push_branch(
     repository_full_name: str,
     branch: str,
     ref: str = "HEAD",
-) -> dict[str, Any]:
-    token = create_installation_token(app_cfg, installation_id)
-    basic_auth = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
-    base_url = github_web_base().rstrip("/")
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GIT_CONFIG_COUNT"] = "1"
-    env["GIT_CONFIG_KEY_0"] = f"http.{base_url}/.extraheader"
-    env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {basic_auth}"
-    result = subprocess.run(
-        ["git", "push", repository_git_url(repository_full_name), f"{ref}:refs/heads/{branch}"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        raise GitHubAPIError(f"git push failed with exit code {result.returncode}: {stderr}")
-    return {
-        "branch": branch,
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip(),
-    }
-
-
-def git_push_branch_with_token(
-    token: str,
-    repository_full_name: str,
-    branch: str,
-    ref: str = "HEAD",
     cwd: str | None = None,
 ) -> dict[str, Any]:
-    """Push one ref with an existing installation token from an explicit checkout."""
+    token = create_installation_token(app_cfg, installation_id)
     basic_auth = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
     base_url = github_web_base().rstrip("/")
     env = os.environ.copy()
@@ -1527,8 +1485,13 @@ def git_push_branch_with_token(
         cwd=cwd,
     )
     if result.returncode != 0:
-        raise GitHubAPIError(f"git push failed with exit code {result.returncode}: {result.stderr.strip()}")
-    return {"branch": branch, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+        stderr = result.stderr.strip()
+        raise GitHubAPIError(f"git push failed with exit code {result.returncode}: {stderr}")
+    return {
+        "branch": branch,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
 
 
 def install_url(app_cfg: dict[str, Any]) -> str:

@@ -1,243 +1,108 @@
 from __future__ import annotations
 
 import json
-import os
 import pathlib
-import shlex
 import subprocess
 import sys
 import tempfile
+import shlex
 import textwrap
 import unittest
 
-sys.path.insert(0, str(WORKER.parent) if "WORKER" in globals() else str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+
+import github_intake_docs_patch_worker as worker
 
 
-WORKER = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "github_intake_docs_patch_worker.py"
+SHA = "a" * 40
 
 
-def assignment(head_sha: str = "a" * 40, changed_paths: list[str] | None = None) -> dict[str, object]:
-    paths = changed_paths or ["docs/guide.md"]
-    return {
-        "schema_version": 1,
-        "kind": "github-pr-docs-impact-assignment",
-        "identity": {
-            "repository_id": "17",
-            "repository": "allenday/demo",
-            "pr_number": 9,
-            "head_sha": head_sha,
-            "source_key": "github-pr:17:9:" + head_sha,
-        },
-        "agent_skill": "developer-experience-techdocs",
-        "evidence_bundle": {
-            "head_sha": head_sha,
-            "proposal_identity": {
-                "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
-                "base_sha": "b" * 40, "head_sha": head_sha,
-                "head_repository_id": "17", "head_repository": "allenday/demo", "base_ref": "main",
-            },
-            "files": [{
-                "path": path,
-                "reference": "github://allenday/demo/blob/" + head_sha + "/" + path,
-                "patch": "@@ -1 +1 @@\n-old\n+new\n",
-            } for path in paths],
-        },
-    }
-
-
-def review(head_sha: str = "a" * 40, verdict: str = "docs-sufficient") -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "kind": "github-pr-docs-impact-review",
-        "identity": {
-            "repository_id": "17",
-            "repository": "allenday/demo",
-            "pr_number": 9,
-            "head_sha": head_sha,
-            "source_key": "github-pr:17:9:" + head_sha,
-        },
-        "agent_skill": "developer-experience-techdocs",
-        "verdict": verdict,
-        "rationale": "The changed behavior is adequately documented.",
-        "evidence": [{
-            "path": "docs/guide.md",
-            "evidence": "github://allenday/demo/blob/" + head_sha + "/docs/guide.md",
-        }],
-        "confidence": 0.92,
-        "proposal": None,
-    }
-
-
-def write_adapter(root: pathlib.Path) -> pathlib.Path:
-    adapter = root / "city-techdocs-adapter.py"
-    adapter.write_text(textwrap.dedent("""\
-        import argparse
-        import json
-        import os
-        import pathlib
-        import sys
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--verdict", default="docs-sufficient")
-        parser.add_argument("--skill-dir", required=True)
-        args = parser.parse_args()
-        if os.environ.get("WORKER_TEST_SECRET"):
-            raise SystemExit("worker environment leaked to adapter")
-        skill = pathlib.Path(args.skill_dir, "SKILL.md").read_text(encoding="utf-8")
-        if "developer-experience-techdocs" not in skill:
-            raise SystemExit("wrong skill")
-        assignment = json.load(sys.stdin)
-        identity = assignment["identity"]
-        head_sha = identity["head_sha"]
-        review = {
-            "schema_version": 1,
-            "kind": "github-pr-docs-impact-review",
-            "identity": identity,
-            "agent_skill": assignment["agent_skill"],
-            "verdict": args.verdict,
-            "rationale": "The configured City TechDocs adapter completed its review.",
-            "evidence": [{
-                "path": assignment["evidence_bundle"]["files"][0]["path"],
-                "evidence": "github://" + identity["repository"] + "/blob/" + head_sha + "/" + assignment["evidence_bundle"]["files"][0]["path"],
-            }],
-            "confidence": 0.9,
-            "proposal": None,
-        }
-        json.dump(review, sys.stdout)
-    """), encoding="utf-8")
-    return adapter
-
-
-def write_skill(root: pathlib.Path) -> pathlib.Path:
-    skill = root / "developer-experience-techdocs"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("name: developer-experience-techdocs\n", encoding="utf-8")
-    return skill
+def assignment() -> dict[str, object]:
+    return {"schema_version": 1, "kind": "github-pr-docs-impact-assignment", "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9, "head_sha": SHA, "source_key": f"github-pr:17:9:{SHA}"}, "agent_skill": "developer-experience-techdocs", "evidence_bundle": {"head_sha": SHA, "proposal_identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9, "base_sha": "b" * 40, "head_sha": SHA, "head_repository_id": "17", "head_repository": "allenday/demo", "base_ref": "main"}, "files": [{"path": "docs/guide.md", "reference": f"github://allenday/demo/blob/{SHA}/docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new\n"}]}}
 
 
 class DocsPatchWorkerTests(unittest.TestCase):
-    def test_assignment_enforces_patch_and_total_evidence_byte_limits(self) -> None:
-        worker_module = __import__("github_intake_docs_patch_worker")
-        oversized = assignment()
-        oversized["evidence_bundle"]["files"][0]["patch"] = "x" * (
-            worker_module.MAX_EVIDENCE_PATCH_BYTES + 1
-        )
-        with self.assertRaisesRegex(ValueError, "patch.*too large"):
-            worker_module.validate_assignment(oversized)
+    def test_worker_cli_writes_and_reports_a_normal_final_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            raw = json.dumps(assignment()).encode()
+            assignment_file, artifact = root / "assignment.json", root / "artifact.json"
+            assignment_file.write_bytes(raw)
+            skill = root / "skill"; skill.mkdir(); (skill / "SKILL.md").write_text("skill", encoding="utf-8")
+            adapter = root / "adapter.py"
+            adapter.write_text(textwrap.dedent("""\
+                import json, sys
+                assignment = json.load(sys.stdin)
+                h = assignment['identity']['head_sha']
+                json.dump({'schema_version': 1, 'kind': 'github-pr-docs-impact-review', 'identity': assignment['identity'], 'agent_skill': assignment['agent_skill'], 'verdict': 'docs-sufficient', 'rationale': 'Sufficient.', 'evidence': [{'path': 'docs/guide.md', 'evidence': 'github://' + assignment['identity']['repository'] + '/blob/' + h + '/docs/guide.md'}], 'confidence': 0.9, 'proposal': None}, sys.stdout)
+            """), encoding="utf-8")
+            result = subprocess.run([sys.executable, str(pathlib.Path(worker.__file__)), "--assignment-file", str(assignment_file), "--artifact-file", str(artifact), "--adapter-command", shlex.join([sys.executable, str(adapter)]), "--skill-dir", str(skill)], text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            candidate = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertEqual(candidate["artifact"]["verdict"], "docs-sufficient")
+            self.assertEqual(json.loads(result.stdout)["review_sha256"], candidate["artifact"]["review_sha256"])
+    def test_final_candidate_accepts_canonical_non_proposal_reviews(self) -> None:
+        from github.tests.test_github_intake_docs_patch import review
+        raw = json.dumps(assignment()).encode()
+        for verdict in ("no-impact", "docs-sufficient", "docs-change-required", "inconclusive"):
+            with self.subTest(verdict=verdict):
+                value = review()
+                value["verdict"] = verdict
+                value["proposal"] = None
+                self.assertEqual(worker.validate_final_candidate(raw, {"schema_version": 1, "snapshot_sha256": __import__("hashlib").sha256(raw).hexdigest(), "artifact": value})["artifact"]["verdict"], verdict)
+    def test_final_candidate_rejects_every_proposal_only_identity_mismatch(self) -> None:
+        from github.tests.test_github_intake_docs_patch import review
+        raw = json.dumps(assignment()).encode()
+        for field, value in (("base_sha", "c" * 40), ("head_repository_id", "18"), ("head_repository", "allenday/other"), ("base_ref", "release")):
+            with self.subTest(field=field):
+                candidate = review()
+                candidate["proposal"]["identity"][field] = value
+                with self.assertRaisesRegex(ValueError, "proposal identity"):
+                    worker.validate_final_candidate(raw, {"schema_version": 1, "snapshot_sha256": __import__("hashlib").sha256(raw).hexdigest(), "artifact": candidate})
 
-        aggregate = assignment(changed_paths=[f"docs/{index}.md" for index in range(5)])
-        for item in aggregate["evidence_bundle"]["files"]:
-            item["patch"] = "x" * (worker_module.MAX_EVIDENCE_PATCH_BYTES - 1024)
-        with self.assertRaisesRegex(ValueError, "total evidence.*too large"):
-            worker_module.validate_assignment(aggregate)
+    def test_adapter_environment_strips_caller_and_github_credentials(self) -> None:
+        environment = worker._adapter_environment()
+        self.assertNotIn("GITHUB_TOKEN", environment)
+        self.assertNotIn("GH_TOKEN", environment)
+        self.assertEqual(set(environment), {"HOME", "PATH", "LANG", "LC_ALL", "PYTHONNOUSERSITE"})
 
-    def test_assignment_rejects_paths_only_without_sha_pinned_evidence(self) -> None:
-        worker_module = __import__("github_intake_docs_patch_worker")
-        self.assertEqual(worker_module.validate_assignment(assignment())["evidence_bundle"]["head_sha"], "a" * 40)
+    def test_assignment_bytes_keep_exact_identity_and_skill_binding(self) -> None:
+        raw = json.dumps(assignment(), separators=(",", ":")).encode()
+        validated = worker.load_assignment_bytes(raw)
+        self.assertEqual(validated["identity"], assignment()["identity"])
+        self.assertEqual(validated["agent_skill"], "developer-experience-techdocs")
+
+    def test_assignment_rejects_proposal_identity_for_another_revision(self) -> None:
         value = assignment()
-        value["changed_paths"] = ["docs/guide.md"]
-        value.pop("evidence_bundle")
-        with self.assertRaises(ValueError):
-            worker_module.validate_assignment(value)
-    def test_worker_passes_only_assignment_and_vendored_skill_to_configured_adapter(self) -> None:
+        value["evidence_bundle"]["proposal_identity"]["head_sha"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "proposal identity"):
+            worker.validate_assignment(value)
+
+    def test_assignment_rejects_every_mismatched_proposal_identity_field(self) -> None:
+        for field, value in (("repository_id", "18"), ("repository", "allenday/other"), ("pr_number", 10), ("head_sha", "c" * 40)):
+            with self.subTest(field=field):
+                value_to_check = assignment()
+                value_to_check["evidence_bundle"]["proposal_identity"][field] = value
+                with self.assertRaisesRegex(ValueError, "proposal identity"):
+                    worker.validate_assignment(value_to_check)
+
+    def test_assignment_rejects_an_unexpected_reviewer_skill(self) -> None:
+        value = assignment()
+        value["agent_skill"] = "other-skill"
+        with self.assertRaisesRegex(ValueError, "agent_skill"):
+            worker.load_assignment_bytes(json.dumps(value).encode())
+
+    def test_credential_error_removes_a_stale_artifact_before_exit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
             assignment_file = root / "assignment.json"
-            artifact = root / "artifact" / "review.json"
+            artifact_file = root / "artifact.json"
             assignment_file.write_text(json.dumps(assignment()), encoding="utf-8")
-            adapter, skill = write_adapter(root), write_skill(root)
-            environment = {
-                **os.environ,
-                "WORKER_TEST_SECRET": "must-not-reach-adapter",
-            }
-            for key in ("GITHUB_TOKEN", "GH_TOKEN"):
-                environment.pop(key, None)
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(WORKER),
-                    "--assignment-file",
-                    str(assignment_file),
-                    "--artifact-file",
-                    str(artifact),
-                    "--adapter-command",
-                    shlex.join([sys.executable, str(adapter)]),
-                    "--skill-dir",
-                    str(skill),
-                ],
-                text=True,
-                capture_output=True,
-                env=environment,
-                check=False,
-            )
+            artifact_file.write_text('{"stale":true}', encoding="utf-8")
+            result = subprocess.run([sys.executable, str(pathlib.Path(worker.__file__)), "--assignment-file", str(assignment_file), "--artifact-file", str(artifact_file)], env={"GITHUB_TOKEN": "present", "PATH": "/usr/bin:/bin"}, text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(artifact_file.exists())
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["status"], "completed")
-            produced = json.loads(artifact.read_text(encoding="utf-8"))
-            self.assertEqual(produced["kind"], "github-pr-docs-impact-review")
-            self.assertEqual(produced["identity"], assignment()["identity"])
-            self.assertEqual(produced["agent_skill"], "developer-experience-techdocs")
-            self.assertNotIn("changed_paths", produced)
 
-    def test_unavailable_agent_produces_no_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = pathlib.Path(temp_dir)
-            assignment_file = root / "assignment.json"
-            artifact = root / "artifact" / "review.json"
-            assignment_file.write_text(json.dumps(assignment()), encoding="utf-8")
-            artifact.parent.mkdir()
-            artifact.write_text('{"stale":true}\n', encoding="utf-8")
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(WORKER),
-                    "--assignment-file",
-                    str(assignment_file),
-                    "--artifact-file",
-                    str(artifact),
-                    "--adapter-command",
-                    "/definitely/not/a/city-techdocs-adapter",
-                    "--skill-dir",
-                    str(write_skill(root)),
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout), {"status": "unavailable"})
-            self.assertFalse(artifact.exists())
-
-    def test_review_for_another_revision_produces_no_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = pathlib.Path(temp_dir)
-            assignment_file = root / "assignment.json"
-            artifact = root / "artifact" / "review.json"
-            assignment_file.write_text(json.dumps(assignment()), encoding="utf-8")
-            adapter = root / "wrong-revision.py"
-            adapter.write_text(
-                "import json,sys; json.dump(" + repr(review("b" * 40)) + ", sys.stdout)\n",
-                encoding="utf-8",
-            )
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(WORKER),
-                    "--assignment-file",
-                    str(assignment_file),
-                    "--artifact-file",
-                    str(artifact),
-                    "--adapter-command",
-                    shlex.join([sys.executable, str(adapter)]),
-                    "--skill-dir",
-                    str(write_skill(root)),
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout), {"status": "unavailable"})
-            self.assertFalse(artifact.exists())
+if __name__ == "__main__":
+    unittest.main()

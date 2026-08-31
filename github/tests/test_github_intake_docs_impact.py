@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-import hashlib
 import pathlib
 import sys
-import tempfile
-import threading
-import time
 import unittest
+import hashlib
+import json
+import tempfile
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-import github_intake_docs_impact as docs_impact
-import github_intake_docs_patch as docs_patch
-import github_intake_service as service
+import github_intake_docs_impact as impact
+import github_intake_docs_review_runtime as runtime
 
 
-DIFF = """diff --git a/docs/guide.md b/docs/guide.md
+SHA = "a" * 40
+
+
+def review() -> dict[str, object]:
+    diff = """diff --git a/docs/guide.md b/docs/guide.md
 index 1111111..2222222 100644
 --- a/docs/guide.md
 +++ b/docs/guide.md
@@ -24,542 +26,318 @@ index 1111111..2222222 100644
 -Old guidance.
 +New guidance.
 """
-
-
-def proposal(head_sha: str = "a" * 40, status: str = "proposed") -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "status": status,
-        "generated_at": "2026-08-28T12:00:00Z",
-        "identity": {
-            "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
-            "base_sha": "b" * 40, "head_sha": head_sha,
-            "head_repository_id": "17", "head_repository": "allenday/demo", "base_ref": "main",
-        },
-        "patch_sha256": hashlib.sha256(DIFF.encode("utf-8")).hexdigest(), "diff": DIFF,
+    proposal = {
+        "schema_version": 1, "status": "proposed", "generated_at": "2026-08-31T12:00:00Z",
+        "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9, "base_sha": "b" * 40, "head_sha": SHA, "head_repository_id": "17", "head_repository": "allenday/demo", "base_ref": "main"},
+        "patch_sha256": hashlib.sha256(diff.encode()).hexdigest(), "diff": diff,
         "files": [{"path": "docs/guide.md", "sha256": "c" * 64}],
-        "claims": [{"claim": "The guide documents the new workflow.",
-                    "evidence": "github://allenday/demo/blob/" + head_sha + "/README.md",
-                    "release_scope": "unreleased"}],
+        "claims": [{"claim": "The guide documents the workflow.", "evidence": f"github://allenday/demo/blob/{SHA}/README.md", "release_scope": "unreleased"}],
         "checks": [{"command": "make docs-check", "status": "passed", "explanation": "Documentation checks passed."}],
     }
+    return {"schema_version": 1, "kind": "github-pr-docs-impact-review", "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9, "head_sha": SHA, "source_key": f"github-pr:17:9:{SHA}"}, "agent_skill": "developer-experience-techdocs", "verdict": "proposal-ready", "rationale": "A bounded documentation patch is ready.", "evidence": [{"path": "docs/guide.md", "evidence": f"github://allenday/demo/blob/{SHA}/docs/guide.md"}], "confidence": 0.9, "proposal": proposal}
 
 
-def valid_agent_review(head_sha: str = "a" * 40, verdict: str = "docs-sufficient") -> dict[str, object]:
+def pull_request(*, head_repository: str = "allenday/demo", head_repository_id: str = "17", head_ref: str = "feature/docs", head_sha: str = SHA) -> dict[str, object]:
     return {
-        "schema_version": 1,
-        "kind": "github-pr-docs-impact-review",
-        "identity": {
-            "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
-            "head_sha": head_sha, "source_key": "github-pr:17:9:" + head_sha,
-        },
-        "agent_skill": "developer-experience-techdocs",
-        "verdict": verdict,
-        "rationale": "The changed behavior is adequately documented.",
-        "evidence": [{
-            "path": "docs/guide.md",
-            "evidence": "github://allenday/demo/blob/" + head_sha + "/docs/guide.md",
-        }],
-        "confidence": 0.92,
-        "proposal": proposal(head_sha) if verdict == "proposal-ready" else None,
+        "number": 9,
+        "head": {"sha": head_sha, "ref": head_ref, "repo": {"id": head_repository_id, "full_name": head_repository}},
+        "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": "17", "full_name": "allenday/demo"}},
     }
 
 
-class DocsImpactTests(unittest.TestCase):
-    def test_followup_pr_plan_is_limited_to_same_repository_heads(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "head_repository_id": "17", "head_repository": "allenday/demo", "head_ref": "feature", "head_sha": "a" * 40}
-        plan = docs_impact.followup_pr_plan(context, valid_agent_review(verdict="proposal-ready"))
-        self.assertEqual(plan["base"], "feature")
-        context["head_repository_id"] = "18"
-        self.assertIsNone(docs_impact.followup_pr_plan(context, valid_agent_review(verdict="proposal-ready")))
+class DocsImpactProjectionTests(unittest.TestCase):
+    def test_valid_same_repository_review_gets_an_app_owned_stacked_plan(self) -> None:
+        plan = impact.followup_pr_plan(pull_request(), review())
 
-    def test_followup_pr_uses_isolated_bot_branch_and_never_author_branch(self) -> None:
-        context = {
-            "repository_id": "17", "repository": "allenday/demo", "number": "9",
-            "head_sha": "a" * 40, "head_repository_id": "17",
-            "head_repository": "allenday/demo", "head_ref": "feature/docs",
+        self.assertEqual(plan, {
+            "repository": "allenday/demo",
+            "branch": "gas-city/docs-9-" + review()["proposal"]["patch_sha256"][:12],
+            "base": "feature/docs",
+            "head_sha": SHA,
+        })
+
+    def test_fork_wrong_identity_or_stale_review_cannot_get_a_followup_plan(self) -> None:
+        wrong_identity = review()
+        wrong_identity["proposal"]["identity"]["base_ref"] = "release"
+        for current, candidate in (
+            (pull_request(head_repository="fork/demo", head_repository_id="99"), review()),
+            (pull_request(), wrong_identity),
+            (pull_request(head_sha="c" * 40), review()),
+        ):
+            with self.subTest(current=current):
+                self.assertIsNone(impact.followup_pr_plan(current, candidate))
+
+    def test_compact_check_never_contains_a_diff_or_internal_dashboard_link(self) -> None:
+        output = impact.compact_check_output(review(), {"url": "https://github.com/allenday/demo/pull/10", "number": "10"})
+
+        self.assertEqual(output["title"], "Documentation impact: follow-up ready")
+        self.assertIn("#10", output["summary"])
+        self.assertNotIn("diff --git", output["summary"])
+        self.assertNotIn("dashboard", output["summary"].lower())
+        self.assertNotIn("gas-city", output["summary"].lower())
+
+    def test_followup_gateway_finds_a_marker_on_a_later_page(self) -> None:
+        gateway = impact.GitHubAppProjectionGateway({"slug": "gas-city"}, "1")
+        pages = [
+            [{"number": 1, "html_url": "https://github.com/allenday/demo/pull/1", "body": "other"}],
+            [{"number": 10, "html_url": "https://github.com/allenday/demo/pull/10", "body": "<!-- marker -->", "head": {"ref": "gas-city/docs-9-deadbeef", "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"repo": {"full_name": "allenday/demo"}}}],
+        ]
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_paginated_list_request", return_value=[item for page in pages for item in page]) as listed:
+            found = gateway.find_followup("allenday/demo", "gas-city/docs-9-deadbeef", "marker")
+
+        self.assertEqual(found, {"number": "10", "url": "https://github.com/allenday/demo/pull/10"})
+        self.assertTrue(listed.called)
+
+    def test_forged_contributor_marker_and_prefix_is_never_adopted_or_closed(self) -> None:
+        gateway = impact.GitHubAppProjectionGateway({"slug": "gas-city"}, "1")
+        forged = {
+            "number": 10, "html_url": "https://github.com/allenday/demo/pull/10", "body": "<!-- marker -->",
+            "head": {"ref": "gas-city/docs-9-deadbeef", "repo": {"full_name": "allenday/demo"}, "user": {"login": "contributor"}},
+            "base": {"repo": {"full_name": "allenday/demo"}},
         }
-        commands: list[list[str]] = []
-        with mock.patch.object(docs_impact.common, "pull_request_head_sha_with_token", return_value="a" * 40), mock.patch.object(
-            docs_impact, "_run_git", side_effect=lambda args, *_args: commands.append(args)
-        ), mock.patch.object(
-            docs_impact.common, "git_push_branch_with_token", return_value={"branch": "bot"}
-        ) as push, mock.patch.object(
-            docs_impact.common, "create_pull_request_with_token",
-            return_value={"number": 31, "html_url": "https://github.com/allenday/demo/pull/31"},
-        ) as create, mock.patch.object(
-            docs_impact.common, "post_issue_comment_with_token",
-            return_value={"html_url": "https://github.com/allenday/demo/pull/9#issuecomment-1"},
-        ) as comment:
-            result = docs_impact.create_followup_pull_request("token", context, valid_agent_review(verdict="proposal-ready"))
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_paginated_list_request", return_value=[forged]):
+            self.assertIsNone(gateway.find_followup("allenday/demo", "gas-city/docs-9-deadbeef", "marker"))
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_request", return_value=forged) as requested:
+            with self.assertRaisesRegex(impact.common.GitHubAPIError, "owned"):
+                gateway.close_followup("allenday/demo", "10", "gas-city/docs-9-deadbeef", "marker")
 
-        self.assertEqual(result["status"], "created")
-        branch = result["branch"]
-        self.assertTrue(branch.startswith("gas-city/docs-9-"))
-        self.assertIn(["git", "checkout", "-b", branch], commands)
-        push.assert_called_once()
-        self.assertEqual(create.call_args.args[5], "feature/docs")
-        self.assertEqual(create.call_args.args[4], branch)
-        comment.assert_called_once_with(
-            "token", "allenday", "demo", "9",
-            "I've opened [#31](https://github.com/allenday/demo/pull/31) as a documentation follow-up for this revision.\n\n"
-            "Review and merge #31, and it will trigger a fresh `Gas City / docs-impact` check while preserving "
-            "this PR's review context.\n\n"
-            "After it completes, the `Gas City / docs-impact` check will pass here and you can merge this PR.",
-        )
-        self.assertEqual(result["comment_url"], "https://github.com/allenday/demo/pull/9#issuecomment-1")
-    def setUp(self) -> None:
-        self.remote_head_sha = "a" * 40
-        patcher = mock.patch.object(
-            service.common,
-            "pull_request_head_sha_with_token",
-            side_effect=lambda *_args: self.remote_head_sha,
-        )
-        self.current_head = patcher.start()
-        self.addCleanup(patcher.stop)
-        update_patcher = mock.patch.object(
-            service.common,
-            "update_check_run_with_token",
-            side_effect=lambda *_args: {"id": _args[3]},
-        )
-        self.update_check = update_patcher.start()
-        self.addCleanup(update_patcher.stop)
+        self.assertEqual(requested.call_count, 1)
 
-    def test_derived_result_is_idempotent_and_persists_canonical_artifact(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        artifact = docs_patch.validate_artifact(proposal())
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
-            service, "addressed_sources_by_key", side_effect=[[], [{"id": "ga-result"}]]
-        ), mock.patch.object(service, "run_subprocess", return_value=mock.Mock(returncode=0, stdout='{"id":"ga-result"}', stderr="")):
-            created = service.create_pull_request_docs_patch_result(context, {"bead_id": "ga-source"}, artifact)
-            duplicate = service.create_pull_request_docs_patch_result(context, {"bead_id": "ga-source"}, artifact)
+    def test_bot_followup_with_wrong_branch_or_marker_substring_is_never_owned(self) -> None:
+        gateway = impact.GitHubAppProjectionGateway({"slug": "gas-city"}, "1")
+        expected_branch = "gas-city/docs-9-deadbeef"
+        def pull(*, branch: str, body: str) -> dict[str, object]:
+            return {
+                "number": 10, "html_url": "https://github.com/allenday/demo/pull/10", "body": body,
+                "head": {"ref": branch, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}},
+                "base": {"repo": {"full_name": "allenday/demo"}},
+            }
+        wrong_branch = pull(branch="gas-city/docs-9-other", body="<!-- marker -->")
+        substring = pull(branch=expected_branch, body="<!-- marker-extra -->")
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_paginated_list_request", side_effect=[[wrong_branch], [substring]]):
+            self.assertIsNone(gateway.find_followup("allenday/demo", expected_branch, "marker"))
+            self.assertIsNone(gateway.find_followup("allenday/demo", expected_branch, "marker"))
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_request", return_value=wrong_branch) as requested:
+            with self.assertRaisesRegex(impact.common.GitHubAPIError, "owned"):
+                gateway.close_followup("allenday/demo", "10", expected_branch, "marker")
+        self.assertEqual(requested.call_count, 1)
 
-            self.assertEqual(created["status"], "created")
-            self.assertEqual(duplicate, {**created, "status": "duplicate", "reason": "source_key_exists"})
-            self.assertEqual(service.github_pr_docs_patch_key(context, created["patch_sha256"]), created["source_key"])
-            self.assertEqual(service.common.read_json(created["artifact_path"])["artifact_sha256"], created["artifact_sha256"])
+    def test_wrong_repo_duplicate_or_substring_marker_never_authorizes_adoption_or_close(self) -> None:
+        gateway = impact.GitHubAppProjectionGateway({"slug": "gas-city"}, "1")
+        branch, marker = "gas-city/docs-9-deadbeef", "marker"
+        def pull(*, repository: str = "allenday/demo", body: str = "<!-- marker -->") -> dict[str, object]:
+            return {"number": 10, "html_url": "https://github.com/allenday/demo/pull/10", "body": body, "head": {"ref": branch, "repo": {"full_name": repository}, "user": {"login": "gas-city[bot]"}}, "base": {"repo": {"full_name": "allenday/demo"}}}
+        cases = (pull(repository="fork/demo"), pull(body="<!-- marker -->\n<!-- marker -->"), pull(body="<!-- marker-extra -->"))
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_paginated_list_request", side_effect=[[case] for case in cases]):
+            for _ in cases:
+                self.assertIsNone(gateway.find_followup("allenday/demo", branch, marker))
+        with mock.patch.object(impact.common, "create_installation_token", return_value="token"), mock.patch.object(impact.common, "github_api_request", return_value=cases[-1]) as requested:
+            with self.assertRaisesRegex(impact.common.GitHubAPIError, "owned"):
+                gateway.close_followup("allenday/demo", "10", branch, marker)
+        self.assertEqual(requested.call_count, 1)
 
-    def test_regenerated_patch_with_a_new_timestamp_reuses_derived_result_identity(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        first = docs_patch.validate_artifact(proposal())
-        regenerated = proposal()
-        regenerated["generated_at"] = "2026-08-28T13:00:00Z"
-        second = docs_patch.validate_artifact(regenerated)
-        self.assertNotEqual(first["artifact_sha256"], second["artifact_sha256"])
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
-            service, "addressed_sources_by_key", side_effect=[[], [{"id": "ga-result"}]]
-        ), mock.patch.object(service, "run_subprocess", return_value=mock.Mock(returncode=0, stdout='{"id":"ga-result"}', stderr="")):
-            created = service.create_pull_request_docs_patch_result(context, {"bead_id": "ga-source"}, first)
-            duplicate = service.create_pull_request_docs_patch_result(context, {"bead_id": "ga-source"}, second)
+    def test_paginated_discovery_reads_the_second_page_before_deciding(self) -> None:
+        first = [{"number": number} for number in range(100)]
+        second = [{"number": 10, "html_url": "https://github.com/allenday/demo/pull/10", "body": "<!-- marker -->"}]
+        with mock.patch.object(impact.common, "github_api_list_request", side_effect=[first, second]) as listed:
+            values = impact.common.github_api_paginated_list_request("GET", "/repos/allenday/demo/pulls?state=all", bearer_token="token")
 
-        self.assertEqual(created["source_key"], duplicate["source_key"])
-        self.assertEqual(created["source_key"], service.github_pr_docs_patch_key(context, first["patch_sha256"]))
+        self.assertEqual(values[-1]["number"], 10)
+        self.assertEqual(listed.call_count, 2)
 
-    def test_webhook_payload_unwraps_durable_delivery_envelope(self) -> None:
-        payload = {"number": 9, "pull_request": {"head": {"sha": "a" * 40}}}
-        self.assertEqual(docs_impact.webhook_payload({"event": "pull_request", "payload": payload}), payload)
+    def test_later_page_check_is_updated_without_a_duplicate_post(self) -> None:
+        gateway = impact.GitHubAppProjectionGateway({}, "1")
+        run = {"external_id": "docs-impact:run", "assignment": {"identity": review()["identity"]}}
+        output = {"title": "Documentation impact: action required", "summary": "Act."}
+        with mock.patch.object(impact.common, "get_pull_request", return_value=pull_request()), mock.patch.object(impact.common, "find_check_run", return_value={"id": "99", "external_id": "docs-impact:run"}), mock.patch.object(impact.common, "update_check_run", return_value={"id": "99"}) as updated, mock.patch.object(impact.common, "create_check_run", side_effect=AssertionError("must not create a duplicate Check Run")):
+            gateway.ensure_check(run, "action_required", output)
 
-    def test_evaluate_creates_visible_check_before_queuing_city_review(self) -> None:
-        payload = {
-            "repository": {"id": 17, "full_name": "allenday/demo", "name": "demo", "owner": {"login": "allenday"}},
-            "pull_request": {"number": 9, "html_url": "https://github.com/allenday/demo/pull/9", "head": {"sha": "a" * 40}},
-            "installation": {"id": 44},
-        }
-        github_requests: list[object] = []
-        source_key = "github-pr:17:9:" + "a" * 40
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict("os.environ", {"GC_SERVICE_STATE_ROOT": state_root}), mock.patch.object(
-            docs_impact, "create_source", return_value={"status": "created", "bead_id": "ga-1", "source_key": source_key}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=lambda *args, **kwargs: (github_requests.append(args), {"id": 81})[1]
-        ), mock.patch.object(
-            service.common, "update_check_run_with_token", side_effect=lambda *args: github_requests.append(args)
-        ):
-            result = docs_impact.evaluate(payload, "delivery-1", "token", paths=["src/cli.py"])
+        updated.assert_called_once()
 
-        self.assertEqual(result["status"], "queued")
-        self.assertEqual(github_requests[0][4:7], ("Gas City / docs-impact", "in_progress", None))
-        self.assertEqual(result["assignment"]["kind"], "github-pr-docs-impact-assignment")
-        self.assertEqual(result["assignment"]["identity"]["source_key"], source_key)
-        self.assertEqual(result["assignment"]["agent_skill"], "developer-experience-techdocs")
+    def test_terminal_check_race_is_rendered_stale_without_creating_followup(self) -> None:
+        class Gateway:
+            def __init__(self) -> None: self.calls = 0; self.check = None
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                self.calls += 1
+                return pull_request() if self.calls == 1 else pull_request(head_sha="c" * 40)
+            def find_followup(self, *args: object) -> dict[str, str]: return {"number": "10", "url": "https://github.com/allenday/demo/pull/10"}
+            def branch_exists(self, *args: object) -> bool: raise AssertionError("must not create followup")
+            def branch_matches(self, *args: object) -> bool: raise AssertionError("must not create followup")
+            def create_branch(self, *args: object) -> str: raise AssertionError("must not create followup")
+            def create_followup(self, *args: object) -> dict[str, str]: raise AssertionError("must not create followup")
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None: self.check = (conclusion, output)
 
-    def test_valid_exact_review_persists_then_creates_one_completed_check(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40, "bead_id": "mc-private"}
-        review = valid_agent_review()
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check:
-            record = docs_impact.project_agent_review(context, source, review)
-            result = docs_impact.publish_agent_review("token", context, review)
-            saved_record = service.load_docs_impact_run(context)
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = Gateway()
+            run = {"identity": "run", "external_id": "docs-impact:run", "conclusion": "action_required", "assignment": {"identity": review()["identity"]}, "candidate": {"artifact": review()}}
+            impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway).perform("ensure_terminal_check", run)
 
-        self.assertIsNotNone(record)
-        self.assertEqual(result["status"], "published")
-        create_check.assert_called_once()
-        args = create_check.call_args.args
-        self.assertEqual(args[:4], ("token", "allenday", "demo", "a" * 40))
-        self.assertEqual(args[5:7], ("in_progress", None))
-        self.assertEqual(args[7]["summary"], "The changed behavior is adequately documented.\n\nNext action: No documentation action is required for this revision.")
-        self.update_check.assert_called_once_with(
-            "token",
-            "allenday",
-            "demo",
-            81,
-            "completed",
-            "success",
-            args[7],
-        )
-        self.assertEqual(saved_record["check_run_id"], "81")
+        self.assertEqual(gateway.check[0], "action_required")
+        self.assertEqual(gateway.check[1]["title"], "Documentation impact: stale revision")
 
-    def test_proposal_ready_check_links_compactly_to_stacked_followup(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review(verdict="proposal-ready")
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(service.common, "create_check_run_with_token", return_value={"id": 81}) as create_check:
-            record = docs_impact.project_agent_review(context, source, review)
-            self.assertIsNotNone(record)
-            self.assertIsNotNone(service.save_agent_review_followup(
-                context, record["review"], {"status": "created", "number": "31", "url": "https://github.com/allenday/demo/pull/31"},
-            ))
-            result = docs_impact.publish_agent_review("token", context, record["review"])
+    def test_concrete_gateway_rechecks_head_before_followup_post(self) -> None:
+        gateway = impact.GitHubAppProjectionGateway({}, "1")
+        with mock.patch.object(impact.common, "get_pull_request", return_value=pull_request(head_sha="c" * 40)), mock.patch.object(impact.common, "create_pull_request", side_effect=AssertionError("must not POST a stale followup")):
+            with self.assertRaisesRegex(impact.common.GitHubAPIError, "changed"):
+                gateway.create_followup("allenday/demo", "gas-city/docs-9-deadbeef", "feature/docs", "marker", review())
 
-        self.assertEqual(result["status"], "published")
-        self.assertIn("[Review documentation follow-up PR #31](https://github.com/allenday/demo/pull/31)", create_check.call_args.args[7]["summary"])
+    def test_source_race_after_terminal_check_closes_only_the_marker_followup(self) -> None:
+        class Gateway:
+            def __init__(self) -> None: self.head_reads = 0; self.closed: list[tuple[str, str, str]] = []; self.checks: list[dict[str, str]] = []
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                self.head_reads += 1
+                return pull_request() if self.head_reads < 3 else pull_request(head_sha="c" * 40)
+            def find_followup(self, *args: object) -> dict[str, str]: return {"number": "10", "url": "https://github.com/allenday/demo/pull/10"}
+            def branch_exists(self, *args: object) -> bool: raise AssertionError("existing PR must be reused")
+            def branch_matches(self, *args: object) -> bool: raise AssertionError("existing PR must be reused")
+            def create_branch(self, *args: object) -> str: raise AssertionError("existing PR must be reused")
+            def create_followup(self, *args: object) -> dict[str, str]: raise AssertionError("existing PR must be reused")
+            def close_followup(self, repository: str, number: str, branch: str, marker: str) -> None: self.closed.append((repository, number, marker))
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None: self.checks.append(output)
 
-    def test_head_change_during_check_creation_neutralizes_stale_success(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = Gateway()
+            run = {"identity": "run", "external_id": "docs-impact:run", "conclusion": "action_required", "assignment": {"identity": review()["identity"]}, "candidate": {"artifact": review()}}
+            impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway).perform("ensure_terminal_check", run)
 
-        def create_check(*_args: object, **_kwargs: object) -> dict[str, object]:
-            self.remote_head_sha = "b" * 40
-            return {"id": 81}
+        self.assertEqual(run["state"], "stale")
+        self.assertEqual(run["conclusion"], "action_required")
+        self.assertEqual([number for _, number, _ in gateway.closed], ["10"])
+        self.assertEqual(gateway.checks[-1]["title"], "Documentation impact: stale revision")
 
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=create_check
-        ), mock.patch.object(
-            service.common, "update_check_run_with_token", return_value={"id": 81, "conclusion": "action_required"}
-        ) as update_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            result = docs_impact.publish_agent_review("token", context, review)
-            record = service.load_docs_impact_run(context)
+    def test_source_race_after_pr_creation_closes_that_followup(self) -> None:
+        class Gateway:
+            def __init__(self) -> None: self.head_reads = 0; self.closed: list[str] = []
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                self.head_reads += 1
+                return pull_request() if self.head_reads < 3 else pull_request(head_sha="c" * 40)
+            def find_followup(self, *args: object) -> None: return None
+            def branch_exists(self, *args: object) -> bool: return True
+            def branch_matches(self, *args: object) -> bool: return True
+            def create_branch(self, *args: object) -> str: raise AssertionError("must reuse branch")
+            def create_followup(self, *args: object) -> dict[str, str]: return {"number": "10", "url": "https://github.com/allenday/demo/pull/10"}
+            def close_followup(self, repository: str, number: str, branch: str, marker: str) -> None: self.closed.append(number)
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None: pass
 
-        self.assertEqual(
-            result,
-            {"status": "ignored", "reason": "head_sha_changed", "head_sha": "a" * 40, "check_run_id": "81"},
-        )
-        self.assertEqual(record["publication_state"], "stale")
-        self.assertEqual(record["check_run_id"], "81")
-        update_check.assert_called_once_with(
-            "token",
-            "allenday",
-            "demo",
-            81,
-            "completed",
-            "action_required",
-            {
-                "title": "Documentation impact: stale revision",
-                "summary": "This check was invalidated because the pull request revision could not be confirmed as current.",
-            },
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = Gateway()
+            run = {"identity": "run", "external_id": "docs-impact:run", "conclusion": "action_required", "assignment": {"identity": review()["identity"]}, "candidate": {"artifact": review()}, "followup": {"state": "branch-created", "commit_sha": "d" * 40}}
+            impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway).perform("ensure_terminal_check", run)
 
-    def test_post_create_head_lookup_failure_neutralizes_then_fails_closed(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ), mock.patch.object(
-            service.common, "pull_request_head_sha_with_token", side_effect=RuntimeError("head unavailable")
-        ), mock.patch.object(
-            service.common, "update_check_run_with_token", return_value={"id": 81, "conclusion": "action_required"}
-        ) as update_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            with self.assertRaisesRegex(RuntimeError, "head unavailable"):
-                docs_impact.publish_agent_review("token", context, review)
-            record = service.load_docs_impact_run(context)
+        self.assertEqual(run["state"], "stale")
+        self.assertEqual(gateway.closed, ["10"])
 
-        update_check.assert_called_once()
-        self.assertEqual(record["publication_state"], "stale")
-        self.assertEqual(record["check_run_id"], "81")
+    def test_followup_failure_completes_action_required_check_instead_of_escaping(self) -> None:
+        class FailingGateway:
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                return pull_request()
+            def find_followup(self, *args: object) -> None: return None
+            def branch_exists(self, *args: object) -> bool: return False
+            def branch_matches(self, *args: object) -> bool: return False
+            def create_branch(self, *args: object) -> str: raise RuntimeError("stale at push")
+            def create_followup(self, *args: object) -> dict[str, str]: raise AssertionError("unreachable")
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None:
+                self.check = (conclusion, output)
 
-    def test_neutralization_failure_records_retryable_neutralization_intent(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        self.remote_head_sha = "b" * 40
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ), mock.patch.object(
-            service.common, "update_check_run_with_token", side_effect=RuntimeError("neutralization failed")
-        ):
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            with self.assertRaisesRegex(RuntimeError, "neutralization failed"):
-                docs_impact.publish_agent_review("token", context, review)
-            record = service.load_docs_impact_run(context)
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = FailingGateway()
+            adapter = impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway)
+            run = {"identity": "run", "external_id": "docs-impact:run", "conclusion": "action_required", "assignment": {"identity": review()["identity"]}, "candidate": {"artifact": review()}}
 
-        self.assertEqual(record["publication_state"], "neutralizing")
-        self.assertEqual(record["check_run_id"], "81")
+            adapter.perform("ensure_terminal_check", run)
 
-    def test_stale_state_write_failure_retries_only_neutralization(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        self.remote_head_sha = "b" * 40
-        real_atomic_write = service.common.atomic_write_json
-        stale_write_failed = False
+        self.assertEqual(gateway.check[0], "action_required")
+        self.assertEqual(gateway.check[1]["title"], "Documentation impact: action required")
 
-        def fail_first_stale_write(path: str, value: dict[str, object], mode: int = 0o640) -> None:
-            nonlocal stale_write_failed
-            if value.get("publication_state") == "stale" and not stale_write_failed:
-                stale_write_failed = True
-                raise RuntimeError("stale state write failed")
-            real_atomic_write(path, value, mode)
+    def test_pr_timeout_is_terminal_then_retry_reuses_the_created_followup(self) -> None:
+        class Gateway:
+            def __init__(self) -> None:
+                self.created: list[dict[str, str]] = []
+                self.create_calls = 0
+                self.checks: list[str] = []
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]: return pull_request()
+            def find_followup(self, repository: str, branch: str, marker: str) -> dict[str, str] | None:
+                return next((item for item in self.created if item["marker"] == marker), None)
+            def branch_exists(self, *args: object) -> bool: return True
+            def branch_matches(self, *args: object) -> bool: return True
+            def create_branch(self, *args: object) -> str: raise AssertionError("must reuse existing App branch")
+            def create_followup(self, repository: str, branch: str, base: str, marker: str, review: dict[str, object]) -> dict[str, str]:
+                self.create_calls += 1
+                created = {"number": "10", "url": "https://github.com/allenday/demo/pull/10", "marker": marker}
+                self.created.append(created)
+                raise RuntimeError("request timed out after GitHub created the PR")
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None: self.checks.append(conclusion)
 
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check, mock.patch.object(
-            service.common, "update_check_run_with_token", return_value={"id": 81, "conclusion": "action_required"}
-        ) as update_check, mock.patch.object(
-            service.common, "atomic_write_json", side_effect=fail_first_stale_write
-        ):
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            with self.assertRaisesRegex(RuntimeError, "stale state write failed"):
-                docs_impact.publish_agent_review("token", context, review)
-            self.assertEqual(service.load_docs_impact_run(context)["publication_state"], "neutralizing")
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = Gateway()
+            adapter = impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway)
+            run = {"identity": "run", "external_id": "docs-impact:run", "conclusion": "action_required", "assignment": {"identity": review()["identity"]}, "candidate": {"artifact": review()}, "followup": {"state": "branch-created", "commit_sha": "d" * 40}}
+            adapter.perform("ensure_terminal_check", run)
+            adapter.perform("ensure_terminal_check", run)
 
-            retry = docs_impact.publish_agent_review("token", context, review)
-            record = service.load_docs_impact_run(context)
+        self.assertEqual(gateway.create_calls, 1)
+        self.assertEqual(gateway.checks, ["action_required", "action_required"])
 
-        self.assertEqual(retry, {"status": "ignored", "reason": "publication_stale", "check_run_id": "81"})
-        self.assertEqual(record["publication_state"], "stale")
-        create_check.assert_called_once()
-        self.assertEqual(update_check.call_count, 2)
+    def test_retry_adopts_a_branch_created_before_a_crash_and_opens_one_followup(self) -> None:
+        class Gateway:
+            def __init__(self) -> None:
+                self.branch_created = False
+                self.branches: list[str] = []
+                self.crash_after_branch = True
+                self.pull_requests: list[dict[str, str]] = []
+                self.checks: list[dict[str, object]] = []
 
-    def test_missing_or_wrong_revision_review_creates_no_check(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        missing = valid_agent_review()
-        missing["identity"].pop("source_key")
-        wrong_revision = valid_agent_review("b" * 40)
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(service.common, "create_check_run_with_token") as create_check:
-            self.assertIsNone(docs_impact.project_agent_review(context, source, missing))
-            self.assertIsNone(docs_impact.project_agent_review(context, source, wrong_revision))
-            self.assertEqual(docs_impact.publish_agent_review("token", context, missing)["status"], "ignored")
-            self.assertEqual(docs_impact.publish_agent_review("token", context, wrong_revision)["status"], "ignored")
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                return pull_request()
 
-        create_check.assert_not_called()
+            def find_followup(self, repository: str, branch: str, marker: str) -> dict[str, str] | None:
+                return next((item for item in self.pull_requests if item["marker"] == marker), None)
 
-    def test_review_verdict_selects_the_terminal_check_conclusion(self) -> None:
-        expected_conclusions = {
-            "no-impact": "success",
-            "docs-sufficient": "success",
-            "docs-change-required": "action_required",
-            "proposal-ready": "action_required",
-            "inconclusive": "action_required",
-        }
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check:
-            for index, (verdict, conclusion) in enumerate(expected_conclusions.items()):
-                head_sha = f"{index + 1:x}" * 40
-                self.remote_head_sha = head_sha
-                context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": head_sha}
-                source = {"source_key": "github-pr:17:9:" + head_sha}
-                review = valid_agent_review(head_sha, verdict)
-                self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-                self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
-                self.assertEqual(self.update_check.call_args.args[5], conclusion)
+            def branch_exists(self, repository: str, branch: str) -> bool:
+                return self.branch_created
 
-    def test_proposal_ready_check_links_to_the_review_surface_without_inline_diff(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review(verdict="proposal-ready")
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
+            def branch_matches(self, repository: str, branch: str, marker: str, commit_sha: str = "") -> bool:
+                return self.branch_created
 
-        output = create_check.call_args.args[7]
-        self.assertNotIn("text", output)
-        self.assertIn("Documentation proposal available", output["summary"])
+            def create_branch(self, repository: str, branch: str, head_sha: str, review: dict[str, object], marker: str, before_push: object) -> str:
+                self.branch_created = True
+                self.branches.append(branch)
+                before_push("d" * 40)
+                if self.crash_after_branch:
+                    self.crash_after_branch = False
+                    raise RuntimeError("simulated crash after branch creation")
+                return "d" * 40
 
-    def test_reprojected_review_does_not_create_a_second_check(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check:
-            docs_impact.project_agent_review(context, source, review)
-            docs_impact.publish_agent_review("token", context, review)
-            docs_impact.project_agent_review(context, source, review)
-            duplicate = docs_impact.publish_agent_review("token", context, review)
+            def create_followup(self, repository: str, branch: str, base: str, marker: str, review: dict[str, object]) -> dict[str, str]:
+                created = {"number": "10", "url": "https://github.com/allenday/demo/pull/10", "marker": marker}
+                self.pull_requests.append(created)
+                return created
 
-        self.assertEqual(duplicate["status"], "duplicate")
-        create_check.assert_called_once()
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None:
+                self.checks.append({"conclusion": conclusion, "output": output})
 
-    def test_first_valid_review_is_immutable_against_a_later_valid_review(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        first = valid_agent_review()
-        later = valid_agent_review()
-        later["rationale"] = "A different valid review must not replace the first decision."
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, first))
-            self.assertIsNone(docs_impact.project_agent_review(context, source, later))
-            self.assertEqual(docs_impact.publish_agent_review("token", context, later)["status"], "ignored")
-            self.assertEqual(docs_impact.publish_agent_review("token", context, first)["status"], "published")
+        with tempfile.TemporaryDirectory() as directory:
+            store = runtime.FileDocsReviewStore(directory)
+            gateway = Gateway()
+            adapter = impact.AppProjection(store, gateway)
+            assignment = {"schema_version": 1, "kind": "github-pr-docs-impact-assignment", "identity": review()["identity"], "agent_skill": "developer-experience-techdocs", "evidence_bundle": {"head_sha": SHA, "proposal_identity": review()["proposal"]["identity"], "files": [{"path": "docs/guide.md", "reference": f"github://allenday/demo/blob/{SHA}/docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new\n"}]}}
+            runtime.intake_delivery(store, assignment, adapter, now=100)
+            envelope = {"schema_version": 1, "snapshot_sha256": hashlib.sha256(json.dumps(assignment, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "artifact": review()}
 
-        create_check.assert_called_once()
+            accepted = runtime.accept_candidate(store, envelope, adapter, now=101)
+            self.assertTrue(accepted["accepted"])
+            persisted = store.load(str(review()["identity"]["source_key"]))
+            self.assertEqual(persisted["followup"]["state"], "action-required")
+            self.assertEqual(persisted["followup"]["commit_sha"], "d" * 40)
 
-    def test_retry_after_pre_acceptance_failure_creates_one_check(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=[RuntimeError("connection lost"), {"id": 81}]
-        ) as create_check, mock.patch.object(
-            service.common, "find_check_run_by_external_id_with_token", return_value=None
-        ) as find_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            with self.assertRaisesRegex(RuntimeError, "connection lost"):
-                docs_impact.publish_agent_review("token", context, review)
-            retry = docs_impact.publish_agent_review("token", context, review)
+            runtime.reconcile_pending(store, adapter, now=102)
+            runtime.reconcile_pending(store, adapter, now=103)
 
-        self.assertEqual(retry["status"], "published")
-        self.assertEqual(create_check.call_count, 2)
-        self.assertEqual(
-            create_check.call_args.kwargs["external_id"],
-            service.docs_impact_check_external_id(service.docs_impact_run_locator(context)),
-        )
-        find_check.assert_called_once()
+            self.assertEqual(len(gateway.pull_requests), 1)
+            self.assertEqual(gateway.branches, ["gas-city/docs-9-" + review()["proposal"]["patch_sha256"][:12]])
+            self.assertEqual(store.load(str(review()["identity"]["source_key"]))["followup"]["state"], "created")
+            self.assertEqual(gateway.checks[-1]["conclusion"], "action_required")
 
-    def test_retry_after_ambiguous_acceptance_adopts_the_remote_check(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        external_id = service.docs_impact_check_external_id(service.docs_impact_run_locator(context))
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=RuntimeError("response lost")
-        ) as create_check, mock.patch.object(
-            service.common, "find_check_run_by_external_id_with_token",
-            return_value={"id": 81, "external_id": external_id},
-        ) as find_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            with self.assertRaisesRegex(RuntimeError, "response lost"):
-                docs_impact.publish_agent_review("token", context, review)
-            retry = docs_impact.publish_agent_review("token", context, review)
-            saved_record = service.load_docs_impact_run(context)
 
-        self.assertEqual(retry["status"], "adopted")
-        create_check.assert_called_once()
-        find_check.assert_called_once_with("token", "allenday", "demo", "a" * 40, external_id)
-        self.assertEqual(saved_record["check_run_id"], "81")
-
-    def test_retry_adoption_neutralizes_a_check_for_a_superseded_head(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        external_id = service.docs_impact_check_external_id(service.docs_impact_run_locator(context))
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=RuntimeError("response lost")
-        ), mock.patch.object(
-            service.common, "find_check_run_by_external_id_with_token",
-            return_value={"id": 81, "external_id": external_id},
-        ), mock.patch.object(
-            service.common, "update_check_run_with_token", return_value={"id": 81, "conclusion": "action_required"}
-        ) as update_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            with self.assertRaisesRegex(RuntimeError, "response lost"):
-                docs_impact.publish_agent_review("token", context, review)
-            self.remote_head_sha = "b" * 40
-            retry = docs_impact.publish_agent_review("token", context, review)
-
-        self.assertEqual(retry["status"], "ignored")
-        self.assertEqual(retry["reason"], "head_sha_changed")
-        update_check.assert_called_once()
-
-    def test_check_summary_and_link_hide_the_review_identity(self) -> None:
-        head_sha = "a" * 40
-        source_key = "github-pr:17:9:" + head_sha
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": head_sha}
-        source = {"source_key": source_key}
-        review = valid_agent_review()
-        review["rationale"] = f"Review {source_key} at {head_sha} for repository 17."
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root, "GITHUB_INTAKE_ADMIN_PUBLIC_URL": "https://city.example"}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", return_value={"id": 81}
-        ) as create_check:
-            self.assertIsNotNone(docs_impact.project_agent_review(context, source, review))
-            self.assertEqual(docs_impact.publish_agent_review("token", context, review)["status"], "published")
-
-        args = create_check.call_args.args
-        self.assertEqual(args[4], "Gas City / docs-impact")
-        self.assertNotIn(source_key, args[7]["summary"])
-        self.assertNotIn(head_sha, args[7]["summary"])
-        self.assertNotIn("17", args[7]["summary"])
-        self.assertNotIn(source_key, args[8])
-        self.assertNotIn(head_sha, args[8])
-        self.assertNotIn("repository_id", args[8])
-        self.assertEqual(args[8], "https://city.example/v0/github/admin/runs?run=" + service.docs_impact_run_locator(context))
-
-    def test_concurrent_publication_creates_one_completed_check(self) -> None:
-        context = {"repository_id": "17", "repository": "allenday/demo", "number": "9", "head_sha": "a" * 40}
-        source = {"source_key": "github-pr:17:9:" + "a" * 40}
-        review = valid_agent_review()
-        barrier = threading.Barrier(2)
-        results: list[dict[str, object]] = []
-
-        def publish() -> None:
-            barrier.wait()
-            results.append(docs_impact.publish_agent_review("token", context, review))
-
-        with tempfile.TemporaryDirectory() as state_root, mock.patch.dict(
-            "os.environ", {"GC_SERVICE_STATE_ROOT": state_root}
-        ), mock.patch.object(
-            service.common, "create_check_run_with_token", side_effect=lambda *args, **kwargs: (time.sleep(0.05) or {"id": 81})
-        ) as create_check, mock.patch.object(
-            service.common, "find_check_run_by_external_id_with_token", return_value=None
-        ):
-            docs_impact.project_agent_review(context, source, review)
-            threads = [threading.Thread(target=publish), threading.Thread(target=publish)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-
-        self.assertEqual(sorted(result["status"] for result in results), ["duplicate", "published"])
-        create_check.assert_called_once()
+if __name__ == "__main__":
+    unittest.main()
