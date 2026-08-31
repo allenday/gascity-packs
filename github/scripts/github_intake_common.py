@@ -1238,6 +1238,22 @@ def post_issue_comment(
     )
 
 
+def post_issue_comment_with_token(
+    token: str,
+    owner: str,
+    repo: str,
+    issue_number: str,
+    body: str,
+) -> dict[str, Any]:
+    """Post as the already-authorized GitHub App installation identity."""
+    return github_api_request(
+        "POST",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues/{issue_number}/comments",
+        payload={"body": body},
+        bearer_token=token,
+    )
+
+
 def create_check_run(
     app_cfg: dict[str, Any],
     installation_id: str,
