@@ -126,7 +126,23 @@ def create_followup_pull_request(token: str, context: dict[str, str], review: di
         number = str(created.get("number", "")).strip()
         if not url or not number:
             raise common.GitHubAPIError("created follow-up pull request did not contain URL and number")
-        return {"status": "created", "url": url, "number": number, "branch": branch}
+        comment_body = (
+            f"Gas City opened [#{number}]({url}) as a documentation follow-up for this revision.\n\n"
+            f"Review and merge #{number} first. It targets this PR branch, preserves this PR's review context, "
+            "and triggers a fresh `Gas City / docs-impact` check. Do not close this PR."
+        )
+        try:
+            comment = common.post_issue_comment_with_token(
+                token, owner, repo, context["number"], comment_body,
+            )
+        except common.GitHubAPIError:
+            # The documentation PR is still useful and remains linked in the
+            # Check Run if a best-effort explanatory comment cannot be posted.
+            return {"status": "created", "url": url, "number": number, "branch": branch}
+        return {
+            "status": "created", "url": url, "number": number, "branch": branch,
+            "comment_url": str(comment.get("html_url", "")).strip(),
+        }
     except (KeyError, TypeError, ValueError, OSError, common.GitHubAPIError) as exc:
         return {"status": "proposal-only", "reason": "followup_unavailable", "detail": str(exc)}
 

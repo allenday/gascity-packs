@@ -87,7 +87,10 @@ class DocsImpactTests(unittest.TestCase):
         ) as push, mock.patch.object(
             docs_impact.common, "create_pull_request_with_token",
             return_value={"number": 31, "html_url": "https://github.com/allenday/demo/pull/31"},
-        ) as create:
+        ) as create, mock.patch.object(
+            docs_impact.common, "post_issue_comment_with_token",
+            return_value={"html_url": "https://github.com/allenday/demo/pull/9#issuecomment-1"},
+        ) as comment:
             result = docs_impact.create_followup_pull_request("token", context, valid_agent_review(verdict="proposal-ready"))
 
         self.assertEqual(result["status"], "created")
@@ -97,6 +100,13 @@ class DocsImpactTests(unittest.TestCase):
         push.assert_called_once()
         self.assertEqual(create.call_args.args[5], "feature/docs")
         self.assertEqual(create.call_args.args[4], branch)
+        comment.assert_called_once_with(
+            "token", "allenday", "demo", "9",
+            "Gas City opened [#31](https://github.com/allenday/demo/pull/31) as a documentation follow-up for this revision.\n\n"
+            "Review and merge #31 first. It targets this PR branch, preserves this PR's review context, "
+            "and triggers a fresh `Gas City / docs-impact` check. Do not close this PR.",
+        )
+        self.assertEqual(result["comment_url"], "https://github.com/allenday/demo/pull/9#issuecomment-1")
     def setUp(self) -> None:
         self.remote_head_sha = "a" * 40
         patcher = mock.patch.object(
