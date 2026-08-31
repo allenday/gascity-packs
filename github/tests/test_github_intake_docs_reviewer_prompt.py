@@ -17,6 +17,14 @@ class DocsReviewerPromptTests(unittest.TestCase):
         self.assertIn("git diff --cached", prompt)
         self.assertIn("github_intake_docs_review_workspace.py submit", prompt)
         self.assertIn("Do not hand-write a diff", prompt)
+        self.assertIn(
+            "full deletion of a documentation file is immutable evidence",
+            prompt,
+        )
+        self.assertIn(
+            "restoring its exact deleted content",
+            prompt,
+        )
         self.assertNotIn("write the proposed unified-diff text exactly", prompt)
 
 
