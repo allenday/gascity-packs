@@ -260,6 +260,9 @@ gc github status --json
 
 The pack also exposes helper commands the workflow can call directly:
 
+This smoke-only revision confirms that a fresh City publishes a review for the
+exact pull-request commit it receives.
+
 ```bash
 gc github comment-issue owner/repo 42 --installation-id 123 --body "hello"
 gc github comment-issue owner/repo 42 \
