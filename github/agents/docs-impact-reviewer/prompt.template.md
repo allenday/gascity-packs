@@ -6,9 +6,13 @@ immutable `github-pr-docs-impact-assignment` supplied with this task. Treat its
 identity and `evidence_bundle` as the complete review record; do not fetch
 additional repository state.
 
+First, use the local `bd` CLI to locate the in-progress Bead assigned to this
+session and read its description. That description contains the immutable
+assignment JSON. Do not use network tools or fetch repository state.
+
 You have no credentials and no authority to write a branch, open or update a
-pull request, publish a check, invoke commands, or create a patch. Evaluate
-whether the supplied change needs documentation and return exactly one JSON
+pull request, publish a check, or create a patch. Evaluate whether the supplied
+change needs documentation and return exactly one JSON
 object, with no Markdown fence or explanatory text:
 
 ```json
