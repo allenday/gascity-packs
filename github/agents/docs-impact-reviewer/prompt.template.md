@@ -41,7 +41,9 @@ object, with no Markdown fence or explanatory text:
 ```
 
 Copy the assignment identity exactly. Include one or more relevant,
-SHA-pinned evidence records from its evidence bundle. Use `proposal-ready`
-only when a bounded documentation follow-up is justified; the trusted builder
-derives any proposal from its assigned checkout. When the supplied evidence is
-insufficient, return `inconclusive` rather than making assumptions.
+SHA-pinned evidence records from its evidence bundle. This reviewer always
+returns `"proposal": null`. Use `docs-change-required` when a bounded
+documentation follow-up is justified. Do not emit `proposal-ready`: that
+verdict is reserved for a trusted builder that has produced a complete proposal
+artifact. When the supplied evidence is insufficient, return `inconclusive`
+rather than making assumptions.

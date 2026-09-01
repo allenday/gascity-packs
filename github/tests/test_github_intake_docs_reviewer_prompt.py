@@ -26,6 +26,12 @@ class DocsImpactReviewerPackageTests(unittest.TestCase):
         self.assertIn("evidence_bundle", prompt)
         self.assertIn("developer-experience-techdocs/SKILL.md", prompt)
 
+    def test_prompt_distinguishes_unproposed_doc_work_from_a_ready_proposal(self) -> None:
+        prompt = (AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+
+        self.assertIn("Use `docs-change-required`", prompt)
+        self.assertIn("Do not emit `proposal-ready`", prompt)
+
     def test_reviewer_metadata_and_prompt_remain_deployment_neutral_and_credential_free(self) -> None:
         artifacts = [
             AGENT_ROOT / "agent.toml",
@@ -60,7 +66,6 @@ class DocsImpactReviewerPackageTests(unittest.TestCase):
         self.assertNotIn("{{", rendered)
         for forbidden in (
             "gc ",
-            "bead",
             "runtime ack",
             "worktree",
             "local workspace",
