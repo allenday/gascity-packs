@@ -18,6 +18,9 @@ class VendoredSkillsTests(unittest.TestCase):
             skill_root / "references" / "protocol.md",
             skill_root / "references" / "github.md",
             skill_root / "references" / "github-actions.md",
+            skill_root / "references" / "gitea.md",
+            skill_root / "references" / "woodpecker.md",
+            skill_root / "agents" / "openai.yaml",
         )
 
         for required_file in required_files:
