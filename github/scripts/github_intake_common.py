@@ -1310,6 +1310,51 @@ def post_issue_comment(
     )
 
 
+def github_logical_id_marker(logical_id: str) -> str:
+    """Return the opaque, App-owned marker used to adopt GitHub resources."""
+    logical_id = str(logical_id).strip()
+    if not logical_id or "-->" in logical_id or "\n" in logical_id:
+        raise ValueError("logical_id must be a non-empty single-line value")
+    return f"<!-- gas-city-logical-id:{logical_id} -->"
+
+
+def find_issue_by_logical_id_with_token(token: str, owner: str, repo: str, logical_id: str) -> dict[str, Any] | None:
+    """Find an App-owned issue by its durable logical ID marker.
+
+    The marker is in the issue body rather than a delivery-scoped field, so a
+    restarted projector can adopt work created before its completion write.
+    """
+    marker = github_logical_id_marker(logical_id)
+    page = 1
+    while True:
+        issues = github_api_request(
+            "GET",
+            f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues?state=all&per_page=100&page={page}",
+            bearer_token=token,
+        )
+        if not isinstance(issues, list) or any(not isinstance(issue, dict) for issue in issues):
+            raise GitHubAPIError("issue reconciliation returned an invalid page")
+        for issue in issues:
+            if marker in str(issue.get("body") or ""):
+                return issue
+        if len(issues) < 100:
+            return None
+        page += 1
+
+
+def create_issue_with_token(
+    token: str, owner: str, repo: str, title: str, body: str, logical_id: str,
+) -> dict[str, Any]:
+    """Create an App-owned issue carrying its stable adoption marker."""
+    marker = github_logical_id_marker(logical_id)
+    return github_api_request(
+        "POST",
+        f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues",
+        payload={"title": title, "body": f"{body.rstrip()}\n\n{marker}"},
+        bearer_token=token,
+    )
+
+
 def create_pull_request(
     app_cfg: dict[str, Any],
     installation_id: str,

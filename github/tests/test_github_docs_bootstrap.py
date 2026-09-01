@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-from github_docs_bootstrap import admit_child, new_root, reconcile_root
+from github_docs_bootstrap import admit_child, new_root, project_actions, reconcile_root
 
 
 SHA = "a" * 40
@@ -60,7 +60,103 @@ def decision(**overrides: object) -> dict[str, object]:
     return metadata if len(metadata) > 1 else result
 
 
+class RecordingAdapter:
+    """In-memory external systems which reconcile by durable action ID."""
+
+    def __init__(self, fail_after: set[str] | None = None) -> None:
+        self.fail_after = fail_after or set()
+        self.created: dict[str, list[str]] = {"issue": [], "bead": [], "assignment": [], "status": [], "pr": []}
+        self.resources: dict[str, dict[str, str]] = {}
+
+    def _adopt(self, kind: str, action: dict[str, object]) -> dict[str, str]:
+        action_id = str(action["id"])
+        resource = self.resources.setdefault(action_id, {"id": kind + "-" + str(len(self.resources) + 1), "logical_id": action_id})
+        if action_id not in self.created[kind]:
+            self.created[kind].append(action_id)
+        if kind in self.fail_after:
+            raise RuntimeError("crash after external " + kind + " creation")
+        return resource
+
+    def create_issue(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
+        return self._adopt("issue", action)
+
+    def create_bead(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
+        return self._adopt("bead", action)
+
+    def assign_bead(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
+        return self._adopt("assignment", action)
+
+    def post_root_status(self, root: dict[str, object], action: dict[str, object]) -> dict[str, str]:
+        return self._adopt("status", action)
+
+    def create_docs_pr(self, root: dict[str, object], action: dict[str, object], child: dict[str, object] | None) -> dict[str, str]:
+        return self._adopt("pr", action)
+
+
 class DocsBootstrapTests(unittest.TestCase):
+    def test_projection_replays_a_persisted_issue_intent_without_duplicate_resources(self) -> None:
+        root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
+        adapter = RecordingAdapter()
+
+        # The durable root is reloaded after a crash before its first projection.
+        self.assertEqual(adapter.created["issue"], [])
+        resumed = project_actions(root, adapter)
+        replayed = project_actions(resumed, adapter)
+        replayed = project_actions(replayed, adapter)
+
+        child = replayed["children"][0]
+        self.assertEqual(adapter.created["issue"], ["bootstrap-child:" + child["key"] + ":create_issue"])
+        self.assertEqual(adapter.created["bead"], ["bootstrap-child:" + child["key"] + ":create_bead"])
+        self.assertEqual(adapter.created["assignment"], ["bootstrap-child:" + child["key"] + ":assign_bead"])
+        self.assertEqual([action["state"] for action in replayed["actions"]], ["completed"] * 3)
+
+    def test_projection_recovers_partial_issue_and_bead_projection_after_restart(self) -> None:
+        root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
+        adapter = RecordingAdapter()
+        after_issue = project_actions(root, adapter)
+        adapter.fail_after.add("bead")
+
+        with self.assertRaises(RuntimeError):
+            project_actions(after_issue, adapter)
+        self.assertEqual(after_issue["actions"][1]["state"], "pending")
+        self.assertEqual(adapter.created["issue"], [after_issue["actions"][0]["id"]])
+        self.assertEqual(adapter.created["bead"], ["bootstrap-child:" + after_issue["children"][0]["key"] + ":create_bead"])
+
+        adapter.fail_after.clear()
+        restarted = project_actions(after_issue, adapter)
+        restarted = project_actions(restarted, adapter)
+
+        child = restarted["children"][0]
+        self.assertEqual(adapter.created["issue"], ["bootstrap-child:" + child["key"] + ":create_issue"])
+        self.assertEqual(adapter.created["bead"], ["bootstrap-child:" + child["key"] + ":create_bead"])
+        self.assertEqual(adapter.created["assignment"], ["bootstrap-child:" + child["key"] + ":assign_bead"])
+
+    def test_projection_adopts_existing_terminal_resources_by_action_id(self) -> None:
+        root = new_root(request(), now=100)
+        root["state"] = "cancelled"
+        root["actions"] = [{
+            "id": "bootstrap-root:" + root["identity"] + ":status:cancelled",
+            "kind": "post_root_status", "state": "pending", "state_name": "cancelled",
+        }]
+        adapter = RecordingAdapter()
+
+        projected = project_actions(root, adapter)
+        replayed = project_actions(projected, adapter)
+
+        self.assertEqual(adapter.created["status"], [projected["actions"][0]["id"]])
+        self.assertEqual(replayed["actions"][0]["state"], "completed")
+
+    def test_projection_completes_a_persisted_docs_pr_intent_once(self) -> None:
+        root = new_root(request(), now=100)
+        root["children"] = [{"key": "x"}]
+        root["actions"] = [{"id": "bootstrap-child:x:create_docs_pr", "kind": "create_docs_pr", "state": "pending", "child_key": "x"}]
+        adapter = RecordingAdapter()
+
+        projected = project_actions(root, adapter)
+        project_actions(projected, adapter)
+
+        self.assertEqual(adapter.created["pr"], ["bootstrap-child:x:create_docs_pr"])
+        self.assertEqual(projected["actions"][0]["state"], "completed")
     def test_new_root_uses_exact_immutable_identity_and_defaults(self) -> None:
         root = new_root(request(), now=100)
 

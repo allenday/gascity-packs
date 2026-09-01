@@ -214,9 +214,87 @@ def _terminal(root: dict[str, Any], state: str) -> tuple[dict[str, Any], dict[st
     action_id = f"bootstrap-root:{root['identity']}:status:{state}"
     action = next((item for item in root["actions"] if item.get("id") == action_id), None)
     if action is None:
-        action = _action(action_id, "post_root_status", state=state)
+        # `state` belongs to the durable action lifecycle.  Keep the root's
+        # terminal value separate so the status projection remains pending.
+        action = _action(action_id, "post_root_status", root_state=state)
         root["actions"].append(action)
     return root, action
+
+
+def project_actions(root: dict[str, Any], adapter: Any) -> dict[str, Any]:
+    """Project persisted intents once, adopting effects by their action IDs.
+
+    An action is already persisted as ``pending`` before this function sees
+    it.  A caller may therefore crash before, during, or after an adapter
+    invocation and replay the same root.  Adapters must use ``action['id']``
+    as their external logical ID and return an existing resource when one was
+    created by an earlier attempt.  Completion and successor intents are
+    recorded only after that adopted/created resource is returned.
+    """
+    updated = _copy_root(root)
+    # Never project an intent appended during this call: the caller must first
+    # persist it.  This is the persist-before-action boundary for successors.
+    persisted_ids = [item.get("id") for item in updated["actions"] if item.get("state") == "pending"]
+    for action_id in persisted_ids:
+        action = next(item for item in updated["actions"] if item.get("id") == action_id)
+        _project_action(updated, action, adapter)
+    return updated
+
+
+def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) -> None:
+    kind = action.get("kind")
+    child = _action_child(root, action)
+    if kind == "create_issue":
+        resource = adapter.create_issue(root, action, child)
+        _complete_action(action, resource)
+        assert child is not None
+        _append_action(root, _action(_child_action_id(child, "create_bead"), "create_bead", child_key=child["key"]))
+        return
+    if kind == "create_bead":
+        resource = adapter.create_bead(root, action, child)
+        _complete_action(action, resource)
+        assert child is not None
+        _append_action(root, _action(_child_action_id(child, "assign_bead"), "assign_bead", child_key=child["key"]))
+        return
+    if kind == "assign_bead":
+        resource = adapter.assign_bead(root, action, child)
+        _complete_action(action, resource)
+        return
+    if kind == "post_root_status":
+        resource = adapter.post_root_status(root, action)
+        _complete_action(action, resource)
+        return
+    if kind == "create_docs_pr":
+        resource = adapter.create_docs_pr(root, action, child)
+        _complete_action(action, resource)
+        return
+    raise ValueError(f"unsupported bootstrap projection action: {kind!r}")
+
+
+def _action_child(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    key = action.get("child_key")
+    if key is None:
+        return None
+    child = next((item for item in root["children"] if item.get("key") == key), None)
+    if child is None:
+        raise ValueError(f"bootstrap action references missing child: {key!r}")
+    return child
+
+
+def _complete_action(action: dict[str, Any], resource: Any) -> None:
+    if not isinstance(resource, dict):
+        raise ValueError("bootstrap projection adapter must return a resource object")
+    action["resource"] = copy.deepcopy(resource)
+    action["state"] = "completed"
+
+
+def _append_action(root: dict[str, Any], action: dict[str, Any]) -> None:
+    if not any(existing.get("id") == action["id"] for existing in root["actions"]):
+        root["actions"].append(action)
+
+
+def _child_action_id(child: dict[str, Any], suffix: str) -> str:
+    return f"bootstrap-child:{child['key']}:{suffix}"
 
 
 def _pending(root: dict[str, Any]) -> list[dict[str, Any]]:
