@@ -8,7 +8,7 @@ import argparse
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--label", default="supervisor-smoke")
+    parser.add_argument("--label", default="automatic-export-smoke")
     parser.add_argument("--quiet", action="store_true")
     parser.parse_args()
     return 0
