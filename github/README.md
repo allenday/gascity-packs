@@ -266,6 +266,7 @@ It also exercises the City-to-GitHub completion path.
 The reviewer runs without interactive upgrade prompts.
 This revision verifies Bead-backed reviewer context.
 It follows a refreshed local City pack import.
+It verifies transcript-to-candidate validation.
 
 ```bash
 gc github comment-issue owner/repo 42 --installation-id 123 --body "hello"
