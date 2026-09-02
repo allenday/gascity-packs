@@ -54,6 +54,48 @@ before cancel/retry automation exists, release the intake lock manually:
 gc github release-workflow owner/repo 42
 ```
 
+## Explicit-root documentation bootstrap
+
+`github-docs-bootstrap` is a separate, operator-started baseline workflow. It
+does not run from ordinary pull-request documentation checks, labels, or
+webhooks. Start it only for one explicitly selected root issue and one
+immutable default-branch snapshot:
+
+```bash
+gc sling <rig>/docs-bootstrap github-docs-bootstrap --formula \
+  --var repository_id=<github-node-id> \
+  --var repository=owner/repo \
+  --var installation_id=<app-installation-id> \
+  --var root_issue_url=https://github.com/owner/repo/issues/123 \
+  --var root_issue_number=123 \
+  --var default_branch=main \
+  --var default_branch_sha=<40-character-sha> \
+  --var techdocs_role='<reader role>' \
+  --var techdocs_job='<reader job>' \
+  --var techdocs_starting_context='<starting context>' \
+  --var techdocs_success_condition='<success condition>' \
+  --var techdocs_backfill_policy=blocking-only \
+  --var max_depth=2 --var max_children=8 --var max_docs_prs=4 \
+  --var max_debt_issues=8 --var max_elapsed_seconds=86400 \
+  --var max_non_progress=3
+```
+
+Prerequisites are a configured GitHub App installation with the durable
+bootstrap projection storage available, an explicit root issue, the pinned
+default-branch SHA, and the pack's vendored IDD and TechDocs skills. Every
+reader-journey field and budget is required; the formula intentionally has no
+defaults that could broaden scope.
+
+The controller can finish as `baseline-complete`, `owner-review-required`,
+`blocked-on-product-decision`, `budget-exhausted`, or `cancelled`. An admitted
+blocking child may yield at most one App-owned documentation pull request; it
+never writes to a contributor branch or merges. A non-blocking finding is
+recorded as debt (or ignored under `blocking-only`) and never dispatches the
+worker.
+
+Ordinary pull-request documentation checks remain review-only. They cannot
+start, expand, or otherwise invoke this bootstrap workflow.
+
 ## Import It
 
 ```toml

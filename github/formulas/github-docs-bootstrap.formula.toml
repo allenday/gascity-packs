@@ -1,0 +1,164 @@
+description = """
+Explicit-root documentation bootstrap workflow.
+
+This formula starts only when an operator supplies one root issue and its
+immutable default-branch snapshot. It is not an event rule or review hook:
+ordinary documentation-impact checks cannot expand this workflow.
+"""
+formula = "github-docs-bootstrap"
+version = 1
+
+[vars]
+[vars.repository_id]
+description = "Immutable GitHub repository node id"
+required = true
+
+[vars.repository]
+description = "Repository in owner/repo format"
+required = true
+
+[vars.installation_id]
+description = "GitHub App installation id that owns root projection"
+required = true
+
+[vars.root_issue_url]
+description = "Explicit operator-selected root issue URL"
+required = true
+
+[vars.root_issue_number]
+description = "Explicit operator-selected root issue number"
+required = true
+
+[vars.default_branch]
+description = "Repository default branch at the explicit root snapshot"
+required = true
+
+[vars.default_branch_sha]
+description = "Immutable 40-character SHA of the default branch snapshot"
+required = true
+
+[vars.techdocs_role]
+description = "Required TechDocs reader role"
+required = true
+
+[vars.techdocs_job]
+description = "Required TechDocs reader job"
+required = true
+
+[vars.techdocs_starting_context]
+description = "Required TechDocs reader starting context"
+required = true
+
+[vars.techdocs_success_condition]
+description = "Required TechDocs reader success condition"
+required = true
+
+[vars.techdocs_backfill_policy]
+description = "Required TechDocs backfill policy: blocking-only or record-debt"
+required = true
+
+[vars.max_depth]
+description = "Maximum blocking reader-journey depth"
+required = true
+
+[vars.max_children]
+description = "Maximum admitted child records"
+required = true
+
+[vars.max_docs_prs]
+description = "Maximum App-owned documentation pull requests"
+required = true
+
+[vars.max_debt_issues]
+description = "Maximum recorded non-blocking debt issues"
+required = true
+
+[vars.max_elapsed_seconds]
+description = "Maximum elapsed seconds for this root"
+required = true
+
+[vars.max_non_progress]
+description = "Maximum reconciliations with a pending action and no progress"
+required = true
+
+[[steps]]
+id = "load-explicit-root"
+title = "Load the explicit root"
+description = """
+Create or resume only the explicit root identified by the supplied repository,
+root issue, and default-branch SHA through `scripts/github_docs_bootstrap.py`.
+Build the required `techdocs` journey with
+role, job, starting_context, success_condition, and backfill_policy exactly as
+provided. Set every supplied budget explicitly; do not substitute defaults.
+
+Reject an unsupported backfill policy, missing journey field, non-explicit
+source, or snapshot that is not the supplied immutable default-branch SHA.
+Do not discover work from repository events. This formula has no trigger path
+from ordinary documentation-impact review.
+"""
+
+[[steps]]
+id = "snapshot-and-admit"
+title = "Snapshot and mechanically admit one blocking decision"
+needs = ["load-explicit-root"]
+description = """
+Use the durable bootstrap controller to bind a TechDocs decision to the exact
+repository identity, root identity, qualified decision provenance, and
+snapshot SHA. Admit at most one matching blocking decision into one child
+record. Never infer reader-journey content: TechDocs decides documentation
+content; this formula only enforces the controller's provenance, budgets, and
+journey boundary.
+
+A non-blocking decision is debt-only according to the explicit backfill policy
+and must not invoke the worker.
+"""
+
+[[steps]]
+id = "project"
+title = "Project durable admitted-child intents"
+needs = ["snapshot-and-admit"]
+description = """
+Persist before projecting. Use `scripts/github_intake_docs_bootstrap_commands.py
+project --once --identity <bootstrap-identity>` to project only the persisted
+intents through the configured GitHub App and City adapters. Do not create
+resources directly from an unpersisted decision.
+"""
+
+[[steps]]
+id = "run-admitted-child"
+title = "Run the admitted child worker"
+needs = ["project"]
+description = """
+Dispatch `docs-bootstrap` with one admitted child record only after its
+App-owned issue and assigned Bead have been durably projected. The worker's
+input is the admitted child record, not the root request, event payload, or a
+new documentation-impact decision. It returns an IDD-compliant child update
+and may create at most one App-owned documentation pull request.
+
+The worker must read the vendored `managing-issue-driven-development` skill for
+lifecycle evidence and the vendored `developer-experience-techdocs` skill for
+documentation judgment. The former controls lifecycle work; TechDocs decides
+documentation content.
+"""
+
+[[steps]]
+id = "reconcile"
+title = "Reconcile durable root state"
+needs = ["run-admitted-child"]
+description = """
+Persist the child update, then reconcile the same explicit root through the
+durable controller. Re-project only persisted pending actions. Do not schedule
+new worker work for recorded non-blocking debt. Stop when the controller
+returns a terminal state or the current admitted child remains incomplete.
+"""
+
+[[steps]]
+id = "terminal-status"
+title = "Project terminal status"
+needs = ["reconcile"]
+description = """
+When the root reaches `baseline-complete`, `owner-review-required`,
+`blocked-on-product-decision`, `budget-exhausted`, or `cancelled`, project its
+one durable terminal-status intent through the GitHub App. Do not merge any
+documentation pull request; merge authority remains outside this formula.
+"""
