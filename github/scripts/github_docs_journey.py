@@ -283,7 +283,12 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     updated = _copy_root(root)
     if updated["state"] in TERMINAL_STATES or not isinstance(update, dict):
         return updated, None
-    if update.get("schema_version") != 1 or update.get("kind") != "github-docs-bootstrap-child-update":
+    expected_kind = (
+        "github-docs-journey-child-update"
+        if updated.get("schema_version") == 2
+        else "github-docs-bootstrap-child-update"
+    )
+    if update.get("schema_version") != 1 or update.get("kind") != expected_kind:
         return updated, None
     admitted = update.get("admitted_child")
     if not isinstance(admitted, dict):

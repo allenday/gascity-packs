@@ -114,7 +114,7 @@ class DocsBootstrapSmokeTests(unittest.TestCase):
         child = root["children"][0]
         root, pr_action = record_child_update(root, {
             "schema_version": 1,
-            "kind": "github-docs-bootstrap-child-update",
+            "kind": "github-docs-journey-child-update",
             "admitted_child": child,
             "state": "complete",
             "idd_update": {"phase": "ready_to_close", "change_set": "none", "revision": "none", "evidence": ["run:1"], "summary": "done"},
