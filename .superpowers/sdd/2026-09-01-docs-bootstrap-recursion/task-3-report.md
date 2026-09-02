@@ -46,3 +46,18 @@
 - The controller remains projection-only: deployment code supplies its
   GitHub/City adapter.  The GitHub helper now provides the stable issue
   adoption primitive that adapter requires.
+
+## Debt-action amendment (2026-09-02)
+
+- Added projection support for Task 2's durable `create_debt_issue` action.
+  It resolves the persisted debt by `debt_key`, passes the stable action ID to
+  `adapter.create_debt_issue`, and records completion after adoption/creation.
+- Debt projection does not append or invoke issue-work, bead, assignment,
+  docs-PR, or branch adapters.  A replay test proves it creates/adopts one
+  debt issue while every active-work adapter remains unused.
+
+### Amendment verification
+
+`python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_intake_common -v`
+
+- 67 tests passed.

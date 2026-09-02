@@ -72,7 +72,7 @@ class RecordingAdapter:
 
     def __init__(self, fail_after: set[str] | None = None) -> None:
         self.fail_after = fail_after or set()
-        self.created: dict[str, list[str]] = {"issue": [], "bead": [], "assignment": [], "status": [], "pr": []}
+        self.created: dict[str, list[str]] = {"issue": [], "debt": [], "bead": [], "assignment": [], "status": [], "pr": [], "branch": []}
         self.resources: dict[str, dict[str, str]] = {}
 
     def _adopt(self, kind: str, action: dict[str, object]) -> dict[str, str]:
@@ -87,6 +87,9 @@ class RecordingAdapter:
     def create_issue(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
         return self._adopt("issue", action)
 
+    def create_debt_issue(self, root: dict[str, object], action: dict[str, object], debt: dict[str, object]) -> dict[str, str]:
+        return self._adopt("debt", action)
+
     def create_bead(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
         return self._adopt("bead", action)
 
@@ -99,8 +102,31 @@ class RecordingAdapter:
     def create_docs_pr(self, root: dict[str, object], action: dict[str, object], child: dict[str, object] | None) -> dict[str, str]:
         return self._adopt("pr", action)
 
+    def create_branch(self, root: dict[str, object], action: dict[str, object]) -> dict[str, str]:
+        return self._adopt("branch", action)
+
 
 class DocsBootstrapTests(unittest.TestCase):
+    def test_projection_adopts_debt_issue_without_starting_active_work(self) -> None:
+        root, action = admit_child(
+            new_root(request(backfill_policy="record-debt"), now=100),
+            decision(journey_disposition="non-blocking"),
+            now=101,
+        )
+        assert action is not None
+        adapter = RecordingAdapter()
+
+        projected = project_actions(root, adapter)
+        replayed = project_actions(projected, adapter)
+
+        self.assertEqual(adapter.created["debt"], [action["id"]])
+        self.assertEqual(replayed["actions"][0]["state"], "completed")
+        self.assertEqual(adapter.created["issue"], [])
+        self.assertEqual(adapter.created["bead"], [])
+        self.assertEqual(adapter.created["assignment"], [])
+        self.assertEqual(adapter.created["pr"], [])
+        self.assertEqual(adapter.created["branch"], [])
+
     def test_projection_replays_a_persisted_issue_intent_without_duplicate_resources(self) -> None:
         root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
         adapter = RecordingAdapter()

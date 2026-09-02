@@ -285,6 +285,11 @@ def project_actions(root: dict[str, Any], adapter: Any) -> dict[str, Any]:
 def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) -> None:
     kind = action.get("kind")
     child = _action_child(root, action)
+    if kind == "create_debt_issue":
+        debt = _action_debt(root, action)
+        resource = adapter.create_debt_issue(root, action, debt)
+        _complete_action(action, resource)
+        return
     if kind == "create_issue":
         resource = adapter.create_issue(root, action, child)
         _complete_action(action, resource)
@@ -320,6 +325,14 @@ def _action_child(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any
     if child is None:
         raise ValueError(f"bootstrap action references missing child: {key!r}")
     return child
+
+
+def _action_debt(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+    key = action.get("debt_key")
+    debt = next((item for item in root["debts"] if item.get("key") == key), None)
+    if debt is None:
+        raise ValueError(f"bootstrap action references missing debt: {key!r}")
+    return debt
 
 
 def _complete_action(action: dict[str, Any], resource: Any) -> None:
