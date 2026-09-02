@@ -118,7 +118,7 @@ class DocsBootstrapSmokeTests(unittest.TestCase):
             "admitted_child": child,
             "state": "complete",
             "idd_update": {"phase": "ready_to_close", "change_set": "none", "revision": "none", "evidence": ["run:1"], "summary": "done"},
-            "documentation_pr": {"branch": "gas-city/docs-bootstrap", "title": "Fix install docs", "body": "Bounded update."},
+            "documentation_branch": {"branch": "gas-city/docs-bootstrap", "evidence": ["commit:abcdef"]},
         })
         self.assertEqual(pr_action["kind"], "create_docs_pr")
         root = project_actions(root, adapter)

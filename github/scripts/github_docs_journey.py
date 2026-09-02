@@ -200,8 +200,7 @@ def begin_journey(
         raise ValueError("journey request must be an object")
     if existing_journey is not None:
         journey = _copy_root(existing_journey)
-        source = _source(request.get("source"))
-        if journey.get("schema_version") != 2 or source["key"] != journey["source"]["key"]:
+        if not journey_request_matches(journey, request):
             return None, None
         return admit_child(journey, decision, now)
     candidate = new_journey(request, now)
@@ -212,6 +211,27 @@ def begin_journey(
             and candidate["journey"]["backfill_policy"] == "blocking-only"):
         return None, None
     return admit_child(candidate, decision, now)
+
+
+def journey_request_matches(existing_journey: dict[str, Any], request: dict[str, Any]) -> bool:
+    """Return whether ``request`` is the immutable contract of a v2 run.
+
+    A stable source key alone is not an authorization to resume a journey:
+    source URL/capabilities, repository binding, snapshot, entry point,
+    reader journey, and every budget are all part of that binding.
+    """
+    try:
+        existing = _copy_root(existing_journey)
+        candidate = new_journey(request, now=existing["created_at"])
+    except (KeyError, ValueError):
+        return False
+    if existing.get("schema_version") != 2:
+        return False
+    fields = (
+        "identity", "repository_id", "repository", "installation_id", "source",
+        "default_branch", "default_branch_sha", "documentation_root", "journey", "budgets",
+    )
+    return all(existing.get(field) == candidate.get(field) for field in fields)
 
 
 def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -299,15 +319,11 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     state = update.get("state")
     if state not in _COMPLETE_CHILD_STATES:
         return updated, None
-    documentation_pr = update.get("documentation_pr")
-    if documentation_pr is not None and not isinstance(documentation_pr, dict):
+    branch_is_valid, documentation_branch = _worker_documentation_branch(updated, update)
+    if not branch_is_valid:
         return updated, None
-    if documentation_pr is not None:
-        branch = documentation_pr.get("branch")
-        if not isinstance(branch, str) or not branch.startswith("gas-city/"):
-            return updated, None
     child["state"] = state
-    if documentation_pr is None:
+    if documentation_branch is None:
         return updated, None
     if updated["docs_prs_used"] >= updated["budgets"]["max_docs_prs"]:
         return _terminal(updated, "budget-exhausted")
@@ -315,14 +331,60 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     if any(action.get("id") == action_id for action in updated["actions"]):
         return updated, None
     action = _action(
-        action_id, "create_docs_pr", child_key=child["key"], branch=branch,
-        title=str(documentation_pr.get("title") or f"{_run_label(updated)} follow-up"),
-        body=str(documentation_pr.get("body") or f"App-owned {_run_label(updated).lower()} follow-up."),
-        base=str(documentation_pr.get("base") or updated["default_branch"]),
+        action_id, "create_docs_pr", child_key=child["key"], branch=documentation_branch,
+        # The worker can attest only to its App-owned branch and evidence.
+        # The controller, not an untrusted child update, owns public PR intent.
+        title=f"{_run_label(updated)} follow-up: {child['key'][:12]}",
+        body=_documentation_pr_body(updated, child),
+        base=updated["default_branch"],
+        worker_evidence=copy.deepcopy(update["documentation_branch"]["evidence"])
+        if updated.get("schema_version") == 2 else [],
     )
     updated["actions"].append(action)
     updated["docs_prs_used"] += 1
     return updated, action
+
+
+def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -> tuple[bool, str | None]:
+    """Accept the bounded worker branch/evidence contract for v2 journeys.
+
+    v1 records retain their historic ``documentation_pr`` payload so recovery
+    of already-issued bootstrap work remains possible.  A v2 worker may not
+    choose a pull-request title, body, or base branch.
+    """
+    if root.get("schema_version") == 1:
+        documentation_pr = update.get("documentation_pr")
+        if documentation_pr is None:
+            return True, None
+        if not isinstance(documentation_pr, dict):
+            return False, None
+        branch = documentation_pr.get("branch")
+        return (True, branch) if isinstance(branch, str) and branch.startswith("gas-city/") else (False, None)
+    if "documentation_pr" in update:
+        return False, None
+    branch_update = update.get("documentation_branch")
+    if branch_update is None:
+        return True, None
+    if not isinstance(branch_update, dict) or set(branch_update) != {"branch", "evidence"}:
+        return False, None
+    branch = branch_update.get("branch")
+    evidence = branch_update.get("evidence")
+    if not isinstance(branch, str) or not branch.startswith("gas-city/"):
+        return False, None
+    if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
+        return False, None
+    return True, branch
+
+
+def _documentation_pr_body(root: dict[str, Any], child: dict[str, Any]) -> str:
+    """Build deterministic public PR context from admitted controller data."""
+    source = root.get("source", {})
+    source_url = source.get("url") if isinstance(source, dict) else None
+    lines = [f"App-owned {_run_label(root).lower()} follow-up."]
+    if isinstance(source_url, str) and source_url:
+        lines.extend(("", f"Source: {source_url}"))
+    lines.extend(("", "Admitted evidence surfaces:", *(f"- `{path}`" for path in child["evidence_paths"])))
+    return "\n".join(lines)
 
 
 def _same_child_provenance(child: dict[str, Any], admitted: dict[str, Any]) -> bool:
