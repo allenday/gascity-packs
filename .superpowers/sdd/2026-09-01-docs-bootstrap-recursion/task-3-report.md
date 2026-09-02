@@ -95,3 +95,12 @@
   and assignment, so a restart cannot search a different City namespace.
 - Added coverage for the entrypoint and for a persisted restart with divergent
   ambient/configured City roots.
+
+## Non-progress remediation (2026-09-02)
+
+- `project_configured_root` now projects persisted pending actions before
+  reconciliation.  A successful projection resets `non_progress_count`; only
+  a reconciliation pass with no projectable action can consume the retry
+  budget.  Deadline and terminal reconciliation remain in the no-pending path.
+- Added staged issue → bead → assignment coverage proving normal successful
+  passes remain active and leave the non-progress budget at zero.

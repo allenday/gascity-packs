@@ -14,6 +14,7 @@ from github_docs_bootstrap import (
     GitHubCityBootstrapAdapter,
     admit_child,
     new_root,
+    project_configured_root,
     project_persisted_root,
     project_actions,
     reconcile_root,
@@ -135,6 +136,29 @@ class DocsBootstrapTests(unittest.TestCase):
             self.assertEqual(completed, store.load(root["identity"]))
             self.assertEqual([item["state"] for item in first["actions"]], ["completed", "pending"])
             self.assertEqual([item["state"] for item in restarted["actions"]], ["completed", "completed", "pending"])
+
+    @mock.patch("github_docs_bootstrap.GitHubCityBootstrapAdapter")
+    @mock.patch("github_docs_bootstrap.common.load_effective_config")
+    @mock.patch("github_docs_bootstrap.time.time", return_value=102)
+    def test_configured_projection_does_not_spend_non_progress_budget_on_staged_successors(
+        self, now: mock.Mock, load_config: mock.Mock, adapter_class: mock.Mock,
+    ) -> None:
+        root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
+        adapter = RecordingAdapter()
+        load_config.return_value = {"app": {"slug": "gas-city"}}
+        adapter_class.return_value = adapter
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            first = project_configured_root(directory, root["identity"])
+            second = project_configured_root(directory, root["identity"])
+            third = project_configured_root(directory, root["identity"])
+
+        self.assertEqual(first["state"], "active")
+        self.assertEqual(second["state"], "active")
+        self.assertEqual(third["state"], "active")
+        self.assertEqual(third["non_progress_count"], 0)
+        self.assertEqual(adapter.created["assignment"], ["bootstrap-child:" + root["children"][0]["key"] + ":assign_bead"])
 
     @mock.patch("github_docs_bootstrap.common.create_issue_with_token")
     @mock.patch("github_docs_bootstrap.common.find_issue_by_logical_id_with_token", return_value=None)

@@ -287,6 +287,9 @@ def project_actions(root: dict[str, Any], adapter: Any, persist: Any = None) -> 
     for action_id in persisted_ids:
         action = next(item for item in updated["actions"] if item.get("id") == action_id)
         _project_action(updated, action, adapter)
+        # Completion is progress.  Only an explicit reconciliation pass that
+        # cannot complete an existing intent may consume this budget.
+        updated["non_progress_count"] = 0
         if persist is not None:
             persist(updated)
     return updated
@@ -482,6 +485,11 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
         root = store.load(identity)
         if root is None:
             raise ValueError("bootstrap root was not found")
+        # Newly persisted and staged actions are normal progress, not retry
+        # failures.  Reconciliation remains for roots with no action to
+        # project, preserving deadline and terminal-state checks.
+        if _pending(root):
+            return project_actions(root, GitHubCityBootstrapAdapter(app), persist=store.save)
         reconciled, _ = reconcile_root(root, now=time.time())
         store.save(reconciled)
         return project_actions(reconciled, GitHubCityBootstrapAdapter(app), persist=store.save)
