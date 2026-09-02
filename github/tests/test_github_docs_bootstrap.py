@@ -202,6 +202,31 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(adapter.created["issue"], [])
         self.assertEqual(terminal["actions"][0]["state"], "pending")
 
+    @mock.patch("github_docs_bootstrap.GitHubCityBootstrapAdapter")
+    @mock.patch("github_docs_bootstrap.common.load_effective_config")
+    @mock.patch("github_docs_bootstrap.time.time", return_value=102)
+    def test_configured_projection_projects_only_terminal_status_after_terminalization(
+        self, now: mock.Mock, load_config: mock.Mock, adapter_class: mock.Mock,
+    ) -> None:
+        root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
+        root["owner_review_required"] = True
+        adapter = RecordingAdapter()
+        load_config.return_value = {"app": {"slug": "gas-city"}}
+        adapter_class.return_value = adapter
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            terminal = project_configured_root(directory, root["identity"])
+            completed = project_configured_root(directory, root["identity"])
+
+        status = terminal["actions"][-1]
+        self.assertEqual(status["kind"], "post_root_status")
+        self.assertEqual(adapter.created["issue"], [])
+        self.assertEqual(adapter.created["status"], [status["id"]])
+        self.assertEqual(status["state"], "completed")
+        self.assertEqual(completed["actions"][0]["state"], "pending")
+        self.assertEqual(completed["actions"][-1]["state"], "completed")
+
     @mock.patch("github_docs_bootstrap.common.create_issue_with_token")
     @mock.patch("github_docs_bootstrap.common.find_issue_by_logical_id_with_token", return_value=None)
     @mock.patch("github_docs_bootstrap.common.create_installation_token", return_value="installation-token")

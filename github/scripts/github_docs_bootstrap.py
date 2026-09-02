@@ -270,7 +270,9 @@ def _terminal(root: dict[str, Any], state: str) -> tuple[dict[str, Any], dict[st
     return root, action
 
 
-def project_actions(root: dict[str, Any], adapter: Any, persist: Any = None) -> dict[str, Any]:
+def project_actions(
+    root: dict[str, Any], adapter: Any, persist: Any = None, pending_action_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Project persisted intents once, adopting effects by their action IDs.
 
     An action is already persisted as ``pending`` before this function sees
@@ -283,7 +285,11 @@ def project_actions(root: dict[str, Any], adapter: Any, persist: Any = None) -> 
     updated = _copy_root(root)
     # Never project an intent appended during this call: the caller must first
     # persist it.  This is the persist-before-action boundary for successors.
-    persisted_ids = [item.get("id") for item in updated["actions"] if item.get("state") == "pending"]
+    persisted_ids = [
+        item.get("id") for item in updated["actions"]
+        if item.get("state") == "pending"
+        and (pending_action_ids is None or item.get("id") in pending_action_ids)
+    ]
     for action_id in persisted_ids:
         action = next(item for item in updated["actions"] if item.get("id") == action_id)
         _project_action(updated, action, adapter)
@@ -491,11 +497,35 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
         # escape a later cancellation, deadline, review, or budget limit.
         now = time.time()
         if root["state"] in TERMINAL_STATES:
+            terminal_status_ids = {
+                str(action["id"]) for action in root["actions"]
+                if action.get("state") == "pending"
+                and action.get("kind") == "post_root_status"
+                and action.get("root_state") == root["state"]
+            }
+            if terminal_status_ids:
+                try:
+                    return project_actions(
+                        root, GitHubCityBootstrapAdapter(app), persist=store.save,
+                        pending_action_ids=terminal_status_ids,
+                    )
+                except Exception:
+                    return store.save(root)
             return store.save(root)
         terminal_state = _reconcile_terminal(root, now)
         if terminal_state is not None:
-            terminal_root, _ = _terminal(_copy_root(root), terminal_state)
-            return store.save(terminal_root)
+            terminal_root, status_action = _terminal(_copy_root(root), terminal_state)
+            # The terminal transition itself is durable before its status may
+            # be sent.  Its old active-work intents remain deliberately
+            # excluded from this terminal-only projection.
+            store.save(terminal_root)
+            try:
+                return project_actions(
+                    terminal_root, GitHubCityBootstrapAdapter(app), persist=store.save,
+                    pending_action_ids={str(status_action["id"])},
+                )
+            except Exception:
+                return store.save(terminal_root)
 
         # Persisted staged successors are normal progress and project without
         # consuming the retry budget.  Conversely, a failed adapter attempt

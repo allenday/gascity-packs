@@ -123,3 +123,20 @@
 `python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_docs_bootstrap_commands github.tests.test_github_intake_common -v`
 
 - 75 tests passed.
+
+## Terminal-status projection remediation (2026-09-02)
+
+- A terminal transition now persists its `post_root_status` intent before
+  projecting it.  The same or a later delivery may complete that status by its
+  stable action ID.
+- Existing terminal roots project only pending status actions for their current
+  terminal state. Superseded active issue, Bead, assignment, and PR actions
+  remain pending and are never dispatched after terminalization.
+- Added coverage for immediate terminal-status projection and idempotent
+  replay while a previously active issue action stays unprojected.
+
+### Remediation verification
+
+`python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_docs_bootstrap_commands github.tests.test_github_intake_common -v`
+
+- 76 tests passed.
