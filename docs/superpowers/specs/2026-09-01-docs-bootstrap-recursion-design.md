@@ -3,10 +3,11 @@
 ## Outcome
 
 An owner can explicitly start a documentation-baseline run for one GitHub
-repository. The run uses the existing TechDocs/docs-impact decision as its
-only documentation-analysis unit, projects selected bounded gaps into linked
-GitHub issues and City beads, and stops with a durable, human-readable root
-state.
+repository. The run establishes a trustworthy documentation path for one
+declared reader role and job, uses the existing TechDocs/docs-impact decision
+as its only documentation-analysis unit, projects selected bounded gaps into
+linked GitHub issues and City beads, and stops with a durable,
+human-readable root state.
 
 This is additive to PR review. A normal `Gas City / docs-impact` pull-request
 check never starts or expands bootstrap work.
@@ -25,6 +26,32 @@ discipline. The bootstrap controller only carries provenance, evaluates
 mechanical admission rules, persists actions before side effects, and
 reconciles them.
 
+## Reader journey contract
+
+Each explicit root fixes `domain` to `techdocs` and declares:
+
+- `role` — one small, repository-defined role such as `developer`,
+  `operator`, or `end-user`;
+- `job` — the concrete outcome the reader is trying to achieve;
+- `starting_context` — prior knowledge, environment, or entry surface needed
+  to interpret the job;
+- `success_condition` — observable evidence that the reader can complete the
+  job; and
+- `backfill_policy` — `blocking-only` or `record-debt`.
+
+The controller does not infer a persona, product promise, or user journey
+from code alone. A root is rejected when these values are absent. The role is
+not a marketing persona: it constrains the reader's job and expected context.
+Future domains may define their own role libraries, but this controller does
+not accept sales or marketing roots.
+
+The reviewer evaluates a path from the root context toward the declared job.
+A gap that blocks that path may be admitted as remediation. A related gap
+that does not block the path is documentation debt: under `record-debt`, the
+controller may create one provenance-linked, non-executing GitHub issue; it
+must not create a Bead, dispatch a worker, create a branch, or recurse from
+that issue. Under `blocking-only`, it records no debt issue.
+
 ## Durable model
 
 Each root has an immutable logical identity:
@@ -32,11 +59,12 @@ Each root has an immutable logical identity:
 `github-docs-bootstrap:<repository_id>:<root_issue_number>:<default_branch_sha>`
 
 The persisted root record includes repository and installation identity, root
-issue URL, default branch ref/SHA, configured budgets, current counters,
-visited evidence-surface keys, terminal state, and child records. A child key
-is the SHA-256 digest of the root identity plus the canonical docs-impact
-decision identity and normalized evidence-surface paths. Replays therefore
-adopt existing records rather than create duplicate issues, beads, or PRs.
+issue URL, reader journey contract, default branch ref/SHA, configured
+budgets, current counters, visited evidence-surface keys, terminal state, and
+child records. A child key is the SHA-256 digest of the root identity plus the
+canonical docs-impact decision identity and normalized evidence-surface paths.
+Replays therefore adopt existing records rather than create duplicate issues,
+beads, or PRs.
 
 Every child carries `root_issue_url`, `parent_issue_url`, `depth`,
 `bootstrap_identity`, `snapshot_sha`, and the decision digest. A child may be
@@ -48,17 +76,20 @@ The only entrypoint is an explicit root request on a GitHub Issue, routed to a
 new `docs-bootstrap` formula. It snapshots the default branch before any
 analysis and records an initial root status comment.
 
-A result may create one child only when it is a validated, exact
-`docs-change-required` decision for that snapshot, the evidence surface was
-not previously visited, all budgets remain available, and the decision has no
-product ambiguity. The controller creates the GitHub child issue and City
-bead idempotently, then assigns the docs-bootstrap worker. The worker follows
-vendored TechDocs and IDD, creates an App-owned documentation branch/PR, and
-reports its result to the child issue.
+A result may create one active child only when it is a validated, exact
+`docs-change-required` decision for that snapshot, it blocks the declared
+reader journey, the evidence surface was not previously visited, all budgets
+remain available, and the decision has no product ambiguity. The controller
+creates the GitHub child issue and City bead idempotently, then assigns the
+docs-bootstrap worker. The worker follows vendored TechDocs and IDD, creates
+an App-owned documentation branch/PR, and reports its result to the child
+issue.
 
-`no-impact` and `docs-sufficient` consume no child budget. `inconclusive`,
-unsupported evidence, an incompatible snapshot, or product ambiguity do not
-retry autonomously; they set the appropriate root terminal/escalation state.
+`no-impact` and `docs-sufficient` consume no child budget. Non-blocking
+documentation debt consumes a debt-issue budget only and never an active-child
+or PR budget. `inconclusive`, unsupported evidence, an incompatible snapshot,
+or product ambiguity do not retry autonomously; they set the appropriate root
+terminal/escalation state.
 
 ## Guardrails
 
@@ -67,13 +98,14 @@ Defaults are deliberately small and must be explicit in the root record:
 - maximum depth: `2`;
 - maximum admitted children: `8`;
 - maximum documentation PRs: `4`;
+- maximum documentation-debt issues: `8`;
 - maximum elapsed run time: `24h`;
 - maximum consecutive non-progress reconciliations: `3`.
 
-Budget checks occur before persistence of a child admission and again before
-external projection. A stale default branch snapshot terminalizes the root as
-`owner-review-required`; it never silently retargets to a new commit. The
-visited-surface set is append-only for the root snapshot.
+Budget checks occur before persistence of a child or debt admission and again
+before external projection. A stale default branch snapshot terminalizes the
+root as `owner-review-required`; it never silently retargets to a new commit.
+The visited-surface set is append-only for the root snapshot.
 
 ## Terminal states
 
