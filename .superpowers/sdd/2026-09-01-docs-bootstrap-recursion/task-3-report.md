@@ -83,3 +83,15 @@
 `python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_intake_common -v`
 
 - 70 tests passed.
+
+## Scoped re-review remediation (2026-09-02)
+
+- Added `github_intake_docs_bootstrap_commands.py project --once`, the
+  production entrypoint for one stored root.  It invokes
+  `project_configured_root`, which locks, loads, reconciles, saves, and
+  projects the root with the configured authenticated adapter.
+- Bead adoption no longer calls the ambient-root helper.  It now uses the
+  adapter's `self.city_root` for its `gc bd list` lookup as well as creation
+  and assignment, so a restart cannot search a different City namespace.
+- Added coverage for the entrypoint and for a persisted restart with divergent
+  ambient/configured City roots.

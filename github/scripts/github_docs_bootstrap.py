@@ -17,6 +17,7 @@ import os
 import pathlib
 import posixpath
 import tempfile
+import time
 from typing import Any
 
 import github_intake_common as common
@@ -434,7 +435,17 @@ class GitHubCityBootstrapAdapter:
     def _bead(self, action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
         import github_intake_service as service
 
-        existing = service.addressed_sources_by_key(str(action["id"]))
+        lookup = service.run_subprocess(
+            service.gc_bd_command(
+                self.city_root, "list", "--json", "--all", "--metadata-field",
+                f"external.source_key={action['id']}", "--limit", "0",
+            ),
+            self.city_root,
+        )
+        if lookup.returncode != 0:
+            raise RuntimeError(f"gc bd list failed: {service.trim_output(lookup.stderr or lookup.stdout)}")
+        payload = service.extract_json_value(lookup.stdout)
+        existing = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
         if existing:
             return {"id": service.bead_id(existing[0]), "logical_id": str(action["id"])}
         command = service.gc_bd_command(
@@ -466,7 +477,14 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
     app = config.get("app")
     if not isinstance(app, dict):
         raise ValueError("GitHub App configuration is required for bootstrap projection")
-    return project_persisted_root(FileBootstrapStore(state_dir), identity, GitHubCityBootstrapAdapter(app))
+    store = FileBootstrapStore(state_dir)
+    with store.lock(identity):
+        root = store.load(identity)
+        if root is None:
+            raise ValueError("bootstrap root was not found")
+        reconciled, _ = reconcile_root(root, now=time.time())
+        store.save(reconciled)
+        return project_actions(reconciled, GitHubCityBootstrapAdapter(app), persist=store.save)
 
 
 def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) -> None:

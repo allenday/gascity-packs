@@ -158,6 +158,28 @@ class DocsBootstrapTests(unittest.TestCase):
         find.assert_called_once_with("installation-token", "allenday", "demo", action["id"], "gas-city[bot]")
         self.assertEqual(create.call_args.args[-1], action["id"])
 
+    @mock.patch("github_intake_service.run_subprocess")
+    @mock.patch("github_intake_common.city_root", return_value="/ambient-city")
+    def test_bead_restart_lookup_uses_configured_city_root_not_ambient_root(
+        self, city_root: mock.Mock, run: mock.Mock,
+    ) -> None:
+        root, action = admit_child(new_root(request(), now=100), decision(), now=101)
+        assert action is not None
+        child = root["children"][0]
+        root["actions"] = [{"id": "bootstrap-child:" + child["key"] + ":create_bead", "kind": "create_bead", "state": "pending", "child_key": child["key"]}]
+        adapter = GitHubCityBootstrapAdapter({"slug": "gas-city"}, city_root="/configured-city")
+        run.return_value = __import__("subprocess").CompletedProcess([], 0, '[{"id":"ga-1"}]', "")
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            projected = project_persisted_root(store, root["identity"], adapter)
+            restarted = project_persisted_root(store, root["identity"], adapter)
+
+        self.assertEqual(projected["actions"][0]["resource"]["id"], "ga-1")
+        self.assertEqual(restarted["actions"][0]["state"], "completed")
+        self.assertEqual(run.call_args.args[1], "/configured-city")
+        self.assertNotIn("/ambient-city", run.call_args.args[0])
+
     def test_projection_adopts_debt_issue_without_starting_active_work(self) -> None:
         root, action = admit_child(
             new_root(request(backfill_policy="record-debt"), now=100),
