@@ -14,6 +14,8 @@ from github_docs_bootstrap import (
     GitHubCityBootstrapAdapter,
     admit_child,
     begin_traversal,
+    begin_journey,
+    new_journey,
     new_root,
     project_configured_root,
     project_persisted_root,
@@ -120,6 +122,79 @@ class RecordingAdapter:
 
 
 class DocsBootstrapTests(unittest.TestCase):
+    def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
+        journey = new_journey({
+            **request(),
+            "source": {
+                "kind": "github-issue",
+                "key": "github-issue:17:42",
+                "url": "https://github.com/allenday/demo/issues/42",
+                "issue_number": 42,
+                "projection_capabilities": ["issue-comment"],
+            },
+        }, now=100)
+
+        self.assertEqual(journey["schema_version"], 2)
+        self.assertEqual(journey["identity"], f"github-docs-journey:17:github-issue:17:42:{SHA}")
+        self.assertEqual(journey["documentation_root"], "README.md")
+        self.assertEqual(journey["source"]["kind"], "github-issue")
+        self.assertNotIn("root_issue_number", journey)
+
+    def test_journey_admits_work_without_a_bootstrap_root_and_preserves_v1_action_ids(self) -> None:
+        request_value = {
+            **request(),
+            "source": {
+                "kind": "github-issue",
+                "key": "github-issue:17:42",
+                "url": "https://github.com/allenday/demo/issues/42",
+                "issue_number": 42,
+                "projection_capabilities": ["issue-comment"],
+            },
+        }
+        journey, action = begin_journey(request_value, decision(), now=100)
+        assert journey is not None and action is not None
+        self.assertTrue(action["id"].startswith("docs-journey-child:"))
+
+        legacy, legacy_action = admit_child(new_root(request(), now=100), decision(), now=101)
+        assert legacy_action is not None
+        self.assertTrue(legacy_action["id"].startswith("bootstrap-child:"))
+        self.assertEqual(legacy["schema_version"], 1)
+
+    def test_journey_source_cannot_continue_a_different_journey(self) -> None:
+        first_request = {
+            **request(),
+            "source": {
+                "kind": "github-issue", "key": "github-issue:17:42",
+                "url": "https://github.com/allenday/demo/issues/42", "issue_number": 42,
+                "projection_capabilities": ["issue-comment"],
+            },
+        }
+        journey = new_journey(first_request, now=100)
+        other_request = {
+            **first_request,
+            "source": {**first_request["source"], "key": "github-pr:17:9", "kind": "github-pr", "url": "https://github.com/allenday/demo/pull/9"},
+        }
+
+        continued, action = begin_journey(other_request, decision(), now=101, existing_journey=journey)
+
+        self.assertIsNone(continued)
+        self.assertIsNone(action)
+
+    def test_journey_store_keeps_v1_records_readable_and_separates_v2_writes(self) -> None:
+        legacy = new_root(request(), now=100)
+        journey = new_journey({
+            **request(),
+            "source": {"kind": "operator", "key": "operator:demo", "url": "urn:operator:demo", "projection_capabilities": []},
+        }, now=100)
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(legacy)
+            store.save(journey)
+
+            self.assertEqual(store.load(legacy["identity"]), legacy)
+            self.assertEqual(store.load(journey["identity"]), journey)
+            self.assertTrue((pathlib.Path(directory) / "roots").exists())
+            self.assertTrue((pathlib.Path(directory) / "journeys").exists())
     def test_persisted_root_projection_recovers_with_real_store_boundary(self) -> None:
         root, action = admit_child(new_root(request(), now=100), decision(), now=101)
         assert action is not None

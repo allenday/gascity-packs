@@ -1,4 +1,4 @@
-"""Pure, durable state transitions for an explicit docs bootstrap root.
+"""Pure, durable state transitions for source-agnostic documentation journeys.
 
 This module does not inspect TechDocs reasoning.  Non-blocking debt is an
 inactive leaf with no descendants; active continuation exists only on a
@@ -43,7 +43,12 @@ _COMPLETE_CHILD_STATES = frozenset({"complete", "cancelled", "blocked", "failed"
 
 
 def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
-    """Create one explicit, immutable-snapshot bootstrap root record."""
+    """Create a legacy v1 bootstrap record.
+
+    New callers must use :func:`new_journey`.  This constructor intentionally
+    remains byte-compatible with persisted v1 records so a replay continues to
+    adopt its existing external action IDs instead of projecting duplicates.
+    """
     if not isinstance(request, dict) or request.get("explicit") is not True:
         raise ValueError("docs bootstrap roots must be explicit")
     repository_id = _required_text(request, "repository_id")
@@ -86,6 +91,48 @@ def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
     }
 
 
+def new_journey(request: dict[str, Any], now: float) -> dict[str, Any]:
+    """Create a v2 journey run from a normalized request and source envelope.
+
+    The source is provenance, not a privileged execution root.  GitHub issues,
+    pull requests, and operator requests can therefore share this same durable
+    model once their adapters normalize to the contract below.
+    """
+    if not isinstance(request, dict):
+        raise ValueError("documentation journey request must be an object")
+    repository_id = _required_text(request, "repository_id")
+    repository = _required_text(request, "repository")
+    installation_id = _required_text(request, "installation_id")
+    default_branch = _required_text(request, "default_branch")
+    snapshot_sha = _sha(request.get("default_branch_sha"), "default_branch_sha")
+    source = _source(request.get("source"))
+    journey = _journey(request)
+    documentation_root = select_documentation_root(request)
+    return {
+        "schema_version": 2,
+        "identity": f"github-docs-journey:{repository_id}:{source['key']}:{snapshot_sha}",
+        "repository_id": repository_id,
+        "repository": repository,
+        "installation_id": installation_id,
+        "source": source,
+        "default_branch": default_branch,
+        "default_branch_sha": snapshot_sha,
+        "documentation_root": documentation_root,
+        "journey": journey,
+        "created_at": now,
+        "state": "active",
+        "budgets": _budgets(request),
+        "children": [],
+        "debts": [],
+        "actions": [],
+        "visited_surfaces": [],
+        "children_used": 0,
+        "docs_prs_used": 0,
+        "debt_issues_used": 0,
+        "non_progress_count": 0,
+    }
+
+
 def select_documentation_root(request: dict[str, Any]) -> str:
     """Select the declared documentation index, falling back to ``README.md``."""
     if not isinstance(request, dict):
@@ -104,15 +151,16 @@ def select_documentation_root(request: dict[str, Any]) -> str:
 def begin_traversal(
     request: dict[str, Any], decision: dict[str, Any], now: float, *, existing_root: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Create an execution root only for durable work, or continue a bound one.
+    """Compatibility entry point for former bootstrap callers.
 
-    A pull request is never an implicit expansion source: it must echo the
-    exact execution-root identity and documentation root to continue it.
+    Only an already-persisted v1 record follows the old bound-root path.  New
+    work is normalized into a v2 journey, so this wrapper cannot create a new
+    bootstrap root.
     """
     if not isinstance(request, dict):
         raise ValueError("traversal request must be an object")
     pull_request = request.get("pull_request")
-    if pull_request is not None:
+    if pull_request is not None and existing_root is not None and existing_root.get("schema_version") == 1:
         if not isinstance(pull_request, dict) or existing_root is None:
             return None, None
         root = _copy_root(existing_root)
@@ -123,15 +171,43 @@ def begin_traversal(
         return admit_child(root, decision, now)
     if existing_root is not None:
         return None, None
-    # Execution roots are controller-created after traversal proves durable
-    # work is needed; callers need not perform a separate explicit-root step.
     candidate_request = copy.deepcopy(request)
-    candidate_request.setdefault("explicit", True)
-    candidate = new_root(candidate_request, now)
+    if pull_request is not None:
+        # The legacy adapter has no normalized PR source envelope.  Leave it
+        # inert rather than synthesize provenance or create unrelated work.
+        return None, None
+    candidate_request.pop("explicit", None)
+    candidate_request.setdefault("source", {
+        "kind": "github-issue",
+        "key": f"github-issue:{_required_text(candidate_request, 'repository_id')}:{candidate_request['root_issue_number']}",
+        "url": _required_text(candidate_request, "root_issue_url"),
+        "issue_number": candidate_request["root_issue_number"],
+        "projection_capabilities": ["issue-comment"],
+    })
+    return begin_journey(candidate_request, decision, now)
+
+
+def begin_journey(
+    request: dict[str, Any], decision: dict[str, Any], now: float, *, existing_journey: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Start or continue the declared source-bound documentation journey.
+
+    Unlike the v1 bootstrap path, a source that is not bound to a persisted
+    journey may start its own complete journey.  It cannot attach to or expand
+    another source's run merely by replaying a docs-impact artifact.
+    """
+    if not isinstance(request, dict):
+        raise ValueError("journey request must be an object")
+    if existing_journey is not None:
+        journey = _copy_root(existing_journey)
+        source = _source(request.get("source"))
+        if journey.get("schema_version") != 2 or source["key"] != journey["source"]["key"]:
+            return None, None
+        return admit_child(journey, decision, now)
+    candidate = new_journey(request, now)
     normalized = _exact_decision(candidate, decision)
     if normalized is None:
         return None, None
-    # A non-blocking gap under blocking-only has no durable work to own.
     if (normalized["journey_disposition"] == "non-blocking"
             and candidate["journey"]["backfill_policy"] == "blocking-only"):
         return None, None
@@ -169,20 +245,30 @@ def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> t
         return _terminal(updated, "budget-exhausted")
     child = {
         "key": key,
-        "root_issue_url": updated["root_issue_url"],
-        "parent_issue_url": updated["root_issue_url"],
         "depth": depth,
-        "bootstrap_identity": updated["identity"],
         "snapshot_sha": updated["default_branch_sha"],
         "decision_identity": normalized["identity"],
         "decision_digest": normalized["digest"],
         "evidence_paths": normalized["paths"],
         "state": "admitted",
     }
+    if updated.get("schema_version") == 1:
+        child.update({
+            "root_issue_url": updated["root_issue_url"],
+            "parent_issue_url": updated["root_issue_url"],
+            "bootstrap_identity": updated["identity"],
+        })
+    else:
+        child.update({
+            "journey_identity": updated["identity"],
+            "source_key": updated["source"]["key"],
+            "source_url": updated["source"]["url"],
+            "parent_issue_url": updated["source"]["url"],
+        })
     updated["children"].append(child)
     updated["children_used"] += 1
     updated["visited_surfaces"] = sorted(set(updated["visited_surfaces"]) | set(normalized["paths"]))
-    action = _action(f"bootstrap-child:{key}:create_issue", "create_issue", child_key=key)
+    action = _action(f"{_action_prefix(updated)}-child:{key}:create_issue", "create_issue", child_key=key)
     updated["actions"].append(action)
     return updated, action
 
@@ -225,8 +311,8 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
         return updated, None
     action = _action(
         action_id, "create_docs_pr", child_key=child["key"], branch=branch,
-        title=str(documentation_pr.get("title") or "Documentation bootstrap follow-up"),
-        body=str(documentation_pr.get("body") or "App-owned documentation bootstrap follow-up."),
+        title=str(documentation_pr.get("title") or f"{_run_label(updated)} follow-up"),
+        body=str(documentation_pr.get("body") or f"App-owned {_run_label(updated).lower()} follow-up."),
         base=str(documentation_pr.get("base") or updated["default_branch"]),
     )
     updated["actions"].append(action)
@@ -235,13 +321,14 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
 
 
 def _same_child_provenance(child: dict[str, Any], admitted: dict[str, Any]) -> bool:
-    return all(
-        admitted.get(field) == child.get(field)
-        for field in (
-            "bootstrap_identity", "snapshot_sha", "decision_identity", "decision_digest",
-            "root_issue_url", "parent_issue_url", "evidence_paths",
-        )
+    fields = (
+        "snapshot_sha", "decision_identity", "decision_digest", "parent_issue_url", "evidence_paths",
     )
+    if "journey_identity" in child:
+        fields += ("journey_identity", "source_key", "source_url")
+    else:
+        fields += ("bootstrap_identity", "root_issue_url")
+    return all(admitted.get(field) == child.get(field) for field in fields)
 
 
 def _admit_debt(root: dict[str, Any], decision: dict[str, Any], key: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -256,17 +343,19 @@ def _admit_debt(root: dict[str, Any], decision: dict[str, Any], key: str) -> tup
     root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(decision["paths"]))
     debt = {
         "key": key,
-        "root_issue_url": root["root_issue_url"],
-        "bootstrap_identity": root["identity"],
         "snapshot_sha": root["default_branch_sha"],
         "decision_identity": decision["identity"],
         "decision_digest": decision["digest"],
         "evidence_paths": decision["paths"],
         "state": "recorded",
     }
+    if root.get("schema_version") == 1:
+        debt.update({"root_issue_url": root["root_issue_url"], "bootstrap_identity": root["identity"]})
+    else:
+        debt.update({"journey_identity": root["identity"], "source_key": root["source"]["key"], "source_url": root["source"]["url"]})
     root["debts"].append(debt)
     root["debt_issues_used"] += 1
-    action = _action(f"bootstrap-debt:{key}:create_debt_issue", "create_debt_issue", debt_key=key)
+    action = _action(f"{_action_prefix(root)}-debt:{key}:create_debt_issue", "create_debt_issue", debt_key=key)
     root["actions"].append(action)
     return root, action
 
@@ -371,7 +460,8 @@ def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | Non
 
 def _terminal(root: dict[str, Any], state: str) -> tuple[dict[str, Any], dict[str, Any]]:
     root["state"] = state
-    action_id = f"bootstrap-root:{root['identity']}:status:{state}"
+    prefix = "bootstrap-root" if root.get("schema_version") == 1 else "docs-journey"
+    action_id = f"{prefix}:{root['identity']}:status:{state}"
     action = next((item for item in root["actions"] if item.get("id") == action_id), None)
     if action is None:
         # `state` belongs to the durable action lifecycle.  Keep the root's
@@ -418,15 +508,27 @@ class FileBootstrapStore:
     def __init__(self, root: pathlib.Path | str) -> None:
         self.root = pathlib.Path(root)
         self.roots_dir = self.root / "roots"
+        self.journeys_dir = self.root / "journeys"
 
     def _path(self, identity: str) -> pathlib.Path:
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        return self.roots_dir / f"{digest}.json"
+        directory = self.journeys_dir if identity.startswith("github-docs-journey:") else self.roots_dir
+        return directory / f"{digest}.json"
 
     def load(self, identity: str) -> dict[str, Any] | None:
-        try:
-            value = json.loads(self._path(identity).read_text(encoding="utf-8"))
-        except FileNotFoundError:
+        paths = [self._path(identity)]
+        # v1 records were stored under roots/.  Keep that location readable
+        # even if a migration caller addresses a journey identity later.
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        paths.append(self.roots_dir / f"{digest}.json")
+        value = None
+        for path in paths:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                break
+            except FileNotFoundError:
+                continue
+        if value is None:
             return None
         if not isinstance(value, dict) or value.get("identity") != identity:
             raise ValueError("stored bootstrap root is invalid")
@@ -434,9 +536,9 @@ class FileBootstrapStore:
 
     def save(self, root: dict[str, Any]) -> dict[str, Any]:
         checked = _copy_root(root)
-        self.roots_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self._path(checked["identity"])
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.roots_dir, delete=False) as handle:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
             handle.write(json.dumps(checked, sort_keys=True, separators=(",", ":")) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -486,10 +588,10 @@ class GitHubCityBootstrapAdapter:
             raise ValueError("GitHub bootstrap projection requires a configured GitHub App slug")
 
     def create_issue(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
-        return self._issue(root, action, f"Documentation bootstrap: {child['key'][:12]}", child["evidence_paths"])
+        return self._issue(root, action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
 
     def create_debt_issue(self, root: dict[str, Any], action: dict[str, Any], debt: dict[str, Any]) -> dict[str, Any]:
-        return self._issue(root, action, f"Documentation debt: {debt['key'][:12]}", debt["evidence_paths"])
+        return self._issue(root, action, f"Documentation journey debt: {debt['key'][:12]}", debt["evidence_paths"])
 
     def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
         owner, repo = _repository_parts(root)
@@ -497,11 +599,11 @@ class GitHubCityBootstrapAdapter:
         existing = common.find_issue_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
-        body = "\n".join(("App-owned documentation bootstrap item.", "", "Evidence surfaces:", *(f"- `{path}`" for path in evidence_paths)))
+        body = "\n".join((f"App-owned {_run_label(root).lower()} item.", "", "Evidence surfaces:", *(f"- `{path}`" for path in evidence_paths)))
         return common.create_issue_with_token(token, owner, repo, title, body, str(action["id"]))
 
     def create_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
-        return self._bead(action, f"Documentation bootstrap: {child['key'][:12]}", child["evidence_paths"])
+        return self._bead(action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
 
     def assign_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
         import github_intake_service as service
@@ -523,15 +625,21 @@ class GitHubCityBootstrapAdapter:
 
     def post_root_status(self, root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
         owner, repo = _repository_parts(root)
+        issue_number = _source_issue_number(root)
+        if issue_number is None:
+            # A source without GitHub issue-comment capability has no status
+            # projection target.  Recording the logical action as adopted is
+            # still deterministic and does not invent a cross-source write.
+            return {"id": str(action["id"]), "logical_id": str(action["id"])}
         token = common.create_installation_token(self.app_config, str(root["installation_id"]))
         existing = common.find_issue_comment_by_logical_id_with_token(
-            token, owner, repo, str(root["root_issue_number"]), str(action["id"]), self.app_login,
+            token, owner, repo, str(issue_number), str(action["id"]), self.app_login,
         )
         if existing is not None:
             return existing
         state = str(action.get("root_state") or root.get("state") or "")
-        body = f"Documentation bootstrap status: `{state}`.\n\n{common.github_logical_id_marker(str(action['id']))}"
-        return common.post_issue_comment(self.app_config, str(root["installation_id"]), owner, repo, str(root["root_issue_number"]), body)
+        body = f"{_run_label(root)} status: `{state}`.\n\n{common.github_logical_id_marker(str(action['id']))}"
+        return common.post_issue_comment(self.app_config, str(root["installation_id"]), owner, repo, str(issue_number), body)
 
     def create_docs_pr(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any] | None) -> dict[str, Any]:
         # A docs PR is only allowed from an explicit App-owned branch supplied
@@ -544,9 +652,9 @@ class GitHubCityBootstrapAdapter:
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
-        title = str(action.get("title") or "Documentation bootstrap follow-up")
+        title = str(action.get("title") or f"{_run_label(root)} follow-up")
         base = str(action.get("base") or root["default_branch"])
-        body = str(action.get("body") or "App-owned documentation bootstrap follow-up.")
+        body = str(action.get("body") or f"App-owned {_run_label(root).lower()} follow-up.")
         return common.create_pull_request(
             self.app_config, str(root["installation_id"]), owner, repo, title, branch, base,
             body + "\n\n" + common.github_logical_id_marker(str(action["id"])),
@@ -570,7 +678,7 @@ class GitHubCityBootstrapAdapter:
             return {"id": service.bead_id(existing[0]), "logical_id": str(action["id"])}
         command = service.gc_bd_command(
             self.city_root, "create", "--json", title, "-t", "task",
-            "--description", "Documentation bootstrap evidence:\n" + "\n".join(evidence_paths),
+            "--description", "Documentation journey evidence:\n" + "\n".join(evidence_paths),
             "--external-ref", str(action["id"]),
             "--metadata", json.dumps({"external.source_key": str(action["id"])}, sort_keys=True),
         )
@@ -589,6 +697,21 @@ def _repository_parts(root: dict[str, Any]) -> tuple[str, str]:
     if not separator or not owner or not repo or "/" in repo:
         raise ValueError("bootstrap root repository must be owner/repository")
     return owner, repo
+
+
+def _source_issue_number(root: dict[str, Any]) -> int | None:
+    """Return the optional GitHub issue status target for either schema."""
+    if root.get("schema_version") == 1:
+        return root.get("root_issue_number") if type(root.get("root_issue_number")) is int else None
+    source = root.get("source")
+    if not isinstance(source, dict) or source.get("kind") != "github-issue":
+        return None
+    value = source.get("issue_number")
+    return value if type(value) is int and value > 0 else None
+
+
+def _run_label(root: dict[str, Any]) -> str:
+    return "Documentation bootstrap" if root.get("schema_version") == 1 else "Documentation journey"
 
 
 def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dict[str, Any]:
@@ -650,6 +773,20 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
                 return store.save(retried)
         reconciled, _ = reconcile_root(root, now=time.time())
         return store.save(reconciled)
+
+
+# v2 names are the public controller surface.  Keep the v1 names above as
+# compatibility reads for persisted records and existing command wrappers.
+FileJourneyStore = FileBootstrapStore
+GitHubCityJourneyAdapter = GitHubCityBootstrapAdapter
+
+
+def project_persisted_journey(store: FileJourneyStore, identity: str, adapter: Any) -> dict[str, Any]:
+    return project_persisted_root(store, identity, adapter)
+
+
+def project_configured_journey(state_dir: pathlib.Path | str, identity: str) -> dict[str, Any]:
+    return project_configured_root(state_dir, identity)
 
 
 def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) -> None:
@@ -718,7 +855,15 @@ def _append_action(root: dict[str, Any], action: dict[str, Any]) -> None:
 
 
 def _child_action_id(child: dict[str, Any], suffix: str) -> str:
-    return f"bootstrap-child:{child['key']}:{suffix}"
+    return f"{_child_action_prefix(child)}-child:{child['key']}:{suffix}"
+
+
+def _action_prefix(root: dict[str, Any]) -> str:
+    return "bootstrap" if root.get("schema_version") == 1 else "docs-journey"
+
+
+def _child_action_prefix(child: dict[str, Any]) -> str:
+    return "bootstrap" if "bootstrap_identity" in child else "docs-journey"
 
 
 def _pending(root: dict[str, Any]) -> list[dict[str, Any]]:
@@ -733,6 +878,16 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(root, dict) or root.get("state") not in {"active", *TERMINAL_STATES}:
         raise ValueError("root is invalid")
     result = copy.deepcopy(root)
+    schema_version = result.get("schema_version")
+    if schema_version not in {1, 2}:
+        raise ValueError("journey schema version is invalid")
+    if schema_version == 1:
+        _required_text(result, "root_issue_url")
+        root_issue_number = result.get("root_issue_number")
+        if type(root_issue_number) is not int or root_issue_number <= 0:
+            raise ValueError("root_issue_number must be a positive integer")
+    else:
+        result["source"] = _source(result.get("source"))
     for key in ("children", "debts", "actions", "visited_surfaces"):
         if not isinstance(result.get(key), list):
             raise ValueError(f"root {key} must be a list")
@@ -741,6 +896,27 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
     for key in ("children_used", "docs_prs_used", "debt_issues_used", "non_progress_count"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise ValueError(f"root {key} must be a non-negative integer")
+    return result
+
+
+def _source(value: Any) -> dict[str, Any]:
+    """Validate provenance supplied by a source adapter, without privileging it."""
+    if not isinstance(value, dict):
+        raise ValueError("journey source is required")
+    result: dict[str, Any] = {
+        "kind": _required_text(value, "kind"),
+        "key": _required_text(value, "key"),
+        "url": _required_text(value, "url"),
+    }
+    capabilities = value.get("projection_capabilities", [])
+    if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item.strip() for item in capabilities):
+        raise ValueError("source projection_capabilities must be a list of text")
+    result["projection_capabilities"] = sorted(set(capabilities))
+    issue_number = value.get("issue_number")
+    if issue_number is not None:
+        if type(issue_number) is not int or issue_number <= 0:
+            raise ValueError("source issue_number must be a positive integer")
+        result["issue_number"] = issue_number
     return result
 
 
