@@ -3,11 +3,21 @@ from __future__ import annotations
 import hashlib
 import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-from github_docs_bootstrap import admit_child, new_root, project_actions, reconcile_root
+from github_docs_bootstrap import (
+    FileBootstrapStore,
+    GitHubCityBootstrapAdapter,
+    admit_child,
+    new_root,
+    project_persisted_root,
+    project_actions,
+    reconcile_root,
+)
 
 
 SHA = "a" * 40
@@ -107,6 +117,47 @@ class RecordingAdapter:
 
 
 class DocsBootstrapTests(unittest.TestCase):
+    def test_persisted_root_projection_recovers_with_real_store_boundary(self) -> None:
+        root, action = admit_child(new_root(request(), now=100), decision(), now=101)
+        assert action is not None
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            adapter = RecordingAdapter()
+
+            first = project_persisted_root(store, root["identity"], adapter)
+            restarted = project_persisted_root(store, root["identity"], adapter)
+            completed = project_persisted_root(store, root["identity"], adapter)
+
+            self.assertEqual(adapter.created["issue"], [action["id"]])
+            self.assertEqual(adapter.created["bead"], ["bootstrap-child:" + root["children"][0]["key"] + ":create_bead"])
+            self.assertEqual(adapter.created["assignment"], ["bootstrap-child:" + root["children"][0]["key"] + ":assign_bead"])
+            self.assertEqual(completed, store.load(root["identity"]))
+            self.assertEqual([item["state"] for item in first["actions"]], ["completed", "pending"])
+            self.assertEqual([item["state"] for item in restarted["actions"]], ["completed", "completed", "pending"])
+
+    @mock.patch("github_docs_bootstrap.common.create_issue_with_token")
+    @mock.patch("github_docs_bootstrap.common.find_issue_by_logical_id_with_token", return_value=None)
+    @mock.patch("github_docs_bootstrap.common.create_installation_token", return_value="installation-token")
+    def test_production_adapter_uses_app_token_and_stable_id_for_debt_issue(
+        self, token: mock.Mock, find: mock.Mock, create: mock.Mock,
+    ) -> None:
+        root, action = admit_child(
+            new_root(request(backfill_policy="record-debt"), now=100),
+            decision(journey_disposition="non-blocking"),
+            now=101,
+        )
+        assert action is not None
+        create.return_value = {"number": 71, "html_url": "https://github.com/allenday/demo/issues/71"}
+        adapter = GitHubCityBootstrapAdapter({"slug": "gas-city"})
+
+        resource = adapter.create_debt_issue(root, action, root["debts"][0])
+
+        self.assertEqual(resource["number"], 71)
+        token.assert_called_once_with({"slug": "gas-city"}, "91")
+        find.assert_called_once_with("installation-token", "allenday", "demo", action["id"], "gas-city[bot]")
+        self.assertEqual(create.call_args.args[-1], action["id"])
+
     def test_projection_adopts_debt_issue_without_starting_active_work(self) -> None:
         root, action = admit_child(
             new_root(request(backfill_policy="record-debt"), now=100),

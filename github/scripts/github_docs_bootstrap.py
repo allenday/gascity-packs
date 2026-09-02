@@ -1,18 +1,25 @@
 """Pure, durable state transitions for an explicit docs bootstrap root.
 
-This module deliberately does not inspect TechDocs reasoning or perform GitHub
-or City effects.  Callers persist its returned records, then project the
-returned action intents idempotently.
+This module does not inspect TechDocs reasoning.  Non-blocking debt is an
+inactive leaf with no descendants; active continuation exists only on a
+blocking edge of the explicit journey.  Production callers persist returned
+records, then project action intents through the configured GitHub App and
+City Beads adapters.
 """
 
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
+import os
+import pathlib
 import posixpath
+import tempfile
 from typing import Any
 
+import github_intake_common as common
 import github_intake_docs_patch as docs_patch
 
 
@@ -262,7 +269,7 @@ def _terminal(root: dict[str, Any], state: str) -> tuple[dict[str, Any], dict[st
     return root, action
 
 
-def project_actions(root: dict[str, Any], adapter: Any) -> dict[str, Any]:
+def project_actions(root: dict[str, Any], adapter: Any, persist: Any = None) -> dict[str, Any]:
     """Project persisted intents once, adopting effects by their action IDs.
 
     An action is already persisted as ``pending`` before this function sees
@@ -279,7 +286,187 @@ def project_actions(root: dict[str, Any], adapter: Any) -> dict[str, Any]:
     for action_id in persisted_ids:
         action = next(item for item in updated["actions"] if item.get("id") == action_id)
         _project_action(updated, action, adapter)
+        if persist is not None:
+            persist(updated)
     return updated
+
+
+class FileBootstrapStore:
+    """Atomic durable storage for explicit bootstrap roots."""
+
+    def __init__(self, root: pathlib.Path | str) -> None:
+        self.root = pathlib.Path(root)
+        self.roots_dir = self.root / "roots"
+
+    def _path(self, identity: str) -> pathlib.Path:
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        return self.roots_dir / f"{digest}.json"
+
+    def load(self, identity: str) -> dict[str, Any] | None:
+        try:
+            value = json.loads(self._path(identity).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        if not isinstance(value, dict) or value.get("identity") != identity:
+            raise ValueError("stored bootstrap root is invalid")
+        return value
+
+    def save(self, root: dict[str, Any]) -> dict[str, Any]:
+        checked = _copy_root(root)
+        self.roots_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = self._path(checked["identity"])
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.roots_dir, delete=False) as handle:
+            handle.write(json.dumps(checked, sort_keys=True, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = pathlib.Path(handle.name)
+        temporary.replace(path)
+        return checked
+
+    def lock(self, identity: str):
+        self.roots_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = self.roots_dir / f"{hashlib.sha256(identity.encode('utf-8')).hexdigest()}.lock"
+        return _BootstrapLock(path)
+
+
+class _BootstrapLock:
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+        self.handle: Any = None
+
+    def __enter__(self) -> None:
+        self.handle = self.path.open("a+", encoding="utf-8")
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        assert self.handle is not None
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+
+
+def project_persisted_root(store: FileBootstrapStore, identity: str, adapter: Any) -> dict[str, Any]:
+    """Load, project, and save one root while serializing restart recovery."""
+    with store.lock(identity):
+        root = store.load(identity)
+        if root is None:
+            raise ValueError("bootstrap root was not found")
+        # The root was durably written with pending intents before this call.
+        return project_actions(root, adapter, persist=store.save)
+
+
+class GitHubCityBootstrapAdapter:
+    """Production projection through the configured GitHub App and City Beads."""
+
+    def __init__(self, app_config: dict[str, Any], city_root: str = "") -> None:
+        self.app_config = copy.deepcopy(app_config)
+        self.city_root = city_root or common.city_root() or "."
+        self.app_login = common.app_bot_login(self.app_config)
+        if not self.app_login:
+            raise ValueError("GitHub bootstrap projection requires a configured GitHub App slug")
+
+    def create_issue(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+        return self._issue(root, action, f"Documentation bootstrap: {child['key'][:12]}", child["evidence_paths"])
+
+    def create_debt_issue(self, root: dict[str, Any], action: dict[str, Any], debt: dict[str, Any]) -> dict[str, Any]:
+        return self._issue(root, action, f"Documentation debt: {debt['key'][:12]}", debt["evidence_paths"])
+
+    def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
+        owner, repo = _repository_parts(root)
+        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        existing = common.find_issue_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
+        if existing is not None:
+            return existing
+        body = "\n".join(("App-owned documentation bootstrap item.", "", "Evidence surfaces:", *(f"- `{path}`" for path in evidence_paths)))
+        return common.create_issue_with_token(token, owner, repo, title, body, str(action["id"]))
+
+    def create_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+        return self._bead(action, f"Documentation bootstrap: {child['key'][:12]}", child["evidence_paths"])
+
+    def assign_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+        import github_intake_service as service
+
+        bead_action_id = _child_action_id(child, "create_bead")
+        bead_action = next((item for item in root["actions"] if item.get("id") == bead_action_id), None)
+        resource = bead_action.get("resource") if isinstance(bead_action, dict) else None
+        bead_id = str((resource or {}).get("id") or "").strip()
+        if not bead_id:
+            raise ValueError("assign_bead requires a completed create_bead resource")
+        command = service.gc_bd_command(
+            self.city_root, "update", bead_id, "--metadata",
+            json.dumps({"bootstrap.assignment_action_id": action["id"]}, sort_keys=True),
+        )
+        result = service.run_subprocess(command, self.city_root)
+        if result.returncode != 0:
+            raise RuntimeError(f"gc bd update failed: {service.trim_output(result.stderr or result.stdout)}")
+        return {"id": bead_id, "logical_id": str(action["id"])}
+
+    def post_root_status(self, root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+        owner, repo = _repository_parts(root)
+        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        existing = common.find_issue_comment_by_logical_id_with_token(
+            token, owner, repo, str(root["root_issue_number"]), str(action["id"]), self.app_login,
+        )
+        if existing is not None:
+            return existing
+        state = str(action.get("root_state") or root.get("state") or "")
+        body = f"Documentation bootstrap status: `{state}`.\n\n{common.github_logical_id_marker(str(action['id']))}"
+        return common.post_issue_comment(self.app_config, str(root["installation_id"]), owner, repo, str(root["root_issue_number"]), body)
+
+    def create_docs_pr(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any] | None) -> dict[str, Any]:
+        # A docs PR is only allowed from an explicit App-owned branch supplied
+        # by the blocking worker; this controller never writes an author branch.
+        branch = str(action.get("branch") or "")
+        if not branch.startswith("gas-city/"):
+            raise ValueError("create_docs_pr requires an App-owned gas-city/ branch")
+        owner, repo = _repository_parts(root)
+        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
+        if existing is not None:
+            return existing
+        title = str(action.get("title") or "Documentation bootstrap follow-up")
+        base = str(action.get("base") or root["default_branch"])
+        body = str(action.get("body") or "App-owned documentation bootstrap follow-up.")
+        return common.create_pull_request(
+            self.app_config, str(root["installation_id"]), owner, repo, title, branch, base,
+            body + "\n\n" + common.github_logical_id_marker(str(action["id"])),
+        )
+
+    def _bead(self, action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
+        import github_intake_service as service
+
+        existing = service.addressed_sources_by_key(str(action["id"]))
+        if existing:
+            return {"id": service.bead_id(existing[0]), "logical_id": str(action["id"])}
+        command = service.gc_bd_command(
+            self.city_root, "create", "--json", title, "-t", "task",
+            "--description", "Documentation bootstrap evidence:\n" + "\n".join(evidence_paths),
+            "--external-ref", str(action["id"]),
+            "--metadata", json.dumps({"external.source_key": str(action["id"])}, sort_keys=True),
+        )
+        result = service.run_subprocess(command, self.city_root)
+        if result.returncode != 0:
+            raise RuntimeError(f"gc bd create failed: {service.trim_output(result.stderr or result.stdout)}")
+        payload = service.extract_json_value(result.stdout)
+        if not isinstance(payload, dict) or not service.bead_id(payload):
+            raise RuntimeError("gc bd create did not return a bead")
+        return {"id": service.bead_id(payload), "logical_id": str(action["id"])}
+
+
+def _repository_parts(root: dict[str, Any]) -> tuple[str, str]:
+    repository = str(root.get("repository") or "")
+    owner, separator, repo = repository.partition("/")
+    if not separator or not owner or not repo or "/" in repo:
+        raise ValueError("bootstrap root repository must be owner/repository")
+    return owner, repo
+
+
+def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dict[str, Any]:
+    """Production caller for one persisted root using configured App identity."""
+    config = common.load_effective_config()
+    app = config.get("app")
+    if not isinstance(app, dict):
+        raise ValueError("GitHub App configuration is required for bootstrap projection")
+    return project_persisted_root(FileBootstrapStore(state_dir), identity, GitHubCityBootstrapAdapter(app))
 
 
 def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) -> None:

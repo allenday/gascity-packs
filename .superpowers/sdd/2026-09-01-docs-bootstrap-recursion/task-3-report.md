@@ -61,3 +61,25 @@
 `python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_intake_common -v`
 
 - 67 tests passed.
+
+## Review remediation (2026-09-02)
+
+- Added `FileBootstrapStore`, `project_persisted_root`, and
+  `project_configured_root`: production callers now load a durable root under
+  a per-root file lock and atomically save it after each projected action.
+- Added `GitHubCityBootstrapAdapter`, which obtains a configured GitHub App
+  installation token for issue/debt projection and uses the existing City
+  Bead command helpers for bead creation and assignment.  Its documentation
+  PR path accepts only an explicit `gas-city/` branch; it never writes an
+  author branch or merges.
+- Hardened issue adoption: marker matches are ignored when the resource is a
+  pull request or the author is not the configured GitHub App bot.
+- Controller wording now makes the graph boundary explicit: non-blocking debt
+  is an inactive leaf with no descendants; only an explicit blocking journey
+  edge may continue active work.
+
+### Remediation verification
+
+`python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_intake_common -v`
+
+- 70 tests passed.

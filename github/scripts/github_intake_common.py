@@ -1318,16 +1318,21 @@ def github_logical_id_marker(logical_id: str) -> str:
     return f"<!-- gas-city-logical-id:{logical_id} -->"
 
 
-def find_issue_by_logical_id_with_token(token: str, owner: str, repo: str, logical_id: str) -> dict[str, Any] | None:
+def find_issue_by_logical_id_with_token(
+    token: str, owner: str, repo: str, logical_id: str, app_login: str,
+) -> dict[str, Any] | None:
     """Find an App-owned issue by its durable logical ID marker.
 
     The marker is in the issue body rather than a delivery-scoped field, so a
     restarted projector can adopt work created before its completion write.
     """
     marker = github_logical_id_marker(logical_id)
+    app_login = str(app_login).strip().lower()
+    if not app_login:
+        raise ValueError("configured GitHub App login is required for issue adoption")
     page = 1
     while True:
-        issues = github_api_request(
+        issues = github_api_list_request(
             "GET",
             f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues?state=all&per_page=100&page={page}",
             bearer_token=token,
@@ -1335,7 +1340,11 @@ def find_issue_by_logical_id_with_token(token: str, owner: str, repo: str, logic
         if not isinstance(issues, list) or any(not isinstance(issue, dict) for issue in issues):
             raise GitHubAPIError("issue reconciliation returned an invalid page")
         for issue in issues:
-            if marker in str(issue.get("body") or ""):
+            # The issues endpoint includes pull requests.  A contributor can
+            # also copy a marker, so both the resource kind and App ownership
+            # are required before adoption.
+            author = str((issue.get("user") or {}).get("login") or "").strip().lower()
+            if "pull_request" not in issue and author == app_login and marker in str(issue.get("body") or ""):
                 return issue
         if len(issues) < 100:
             return None
@@ -1353,6 +1362,43 @@ def create_issue_with_token(
         payload={"title": title, "body": f"{body.rstrip()}\n\n{marker}"},
         bearer_token=token,
     )
+
+
+def find_issue_comment_by_logical_id_with_token(
+    token: str, owner: str, repo: str, issue_number: str, logical_id: str, app_login: str,
+) -> dict[str, Any] | None:
+    """Adopt only an App-authored root-status comment with the exact marker."""
+    marker = github_logical_id_marker(logical_id)
+    app_login = str(app_login).strip().lower()
+    if not app_login:
+        raise ValueError("configured GitHub App login is required for comment adoption")
+    comments = github_api_paginated_list_request(
+        "GET", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/issues/{urllib.parse.quote(str(issue_number))}/comments",
+        bearer_token=token,
+    )
+    for comment in comments:
+        author = str((comment.get("user") or {}).get("login") or "").strip().lower()
+        if author == app_login and marker in str(comment.get("body") or ""):
+            return comment
+    return None
+
+
+def find_pull_request_by_logical_id_with_token(
+    token: str, owner: str, repo: str, logical_id: str, app_login: str,
+) -> dict[str, Any] | None:
+    """Adopt only an App-authored documentation PR with the exact marker."""
+    marker = github_logical_id_marker(logical_id)
+    app_login = str(app_login).strip().lower()
+    if not app_login:
+        raise ValueError("configured GitHub App login is required for PR adoption")
+    pulls = github_api_paginated_list_request(
+        "GET", f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/pulls?state=all", bearer_token=token,
+    )
+    for pull in pulls:
+        author = str((pull.get("user") or {}).get("login") or "").strip().lower()
+        if author == app_login and marker in str(pull.get("body") or ""):
+            return pull
+    return None
 
 
 def create_pull_request(
