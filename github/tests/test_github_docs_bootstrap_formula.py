@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import pathlib
 import re
 import tomllib
@@ -20,11 +19,7 @@ class DocsBootstrapFormulaTests(unittest.TestCase):
     def _worker_prompt(self) -> str:
         return (AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
 
-    def _assert_reader_journey_contract(self, formula: dict[str, object]) -> None:
-        journey = formula["contract"]["reader_journey"]
-        self.assertEqual(journey["domain"], "techdocs")
-        self.assertEqual(journey["backfill_policies"], ["blocking-only", "record-debt"])
-
+    def _assert_required_journey_and_budgets_have_no_defaults(self, formula: dict[str, object]) -> None:
         variables = formula["vars"]
         for name in (
             "techdocs_role",
@@ -44,20 +39,22 @@ class DocsBootstrapFormulaTests(unittest.TestCase):
             if "default" in variables[name]:
                 self.fail(f"{name} must not define a default")
 
-    def _worker_authority_contract(self) -> dict[str, object]:
-        for block in re.findall(r"```json\s*(\{.*?\})\s*```", self._worker_prompt(), flags=re.DOTALL):
-            parsed = json.loads(block)
-            if parsed.get("kind") == "github-docs-bootstrap-worker-authority":
-                return parsed
-        self.fail("worker prompt has no machine-readable authority contract")
-
-    def _assert_worker_authority(self, authority: dict[str, object]) -> None:
-        self.assertEqual(authority["accepted_input"], "one-admitted-child-record")
-        self.assertEqual(authority["branch_writes"], ["app-owned-documentation-branch"])
-        self.assertFalse(authority["author_branch_write_allowed"])
-        self.assertFalse(authority["contributor_branch_write_allowed"])
-        self.assertFalse(authority["merge_allowed"])
-        self.assertEqual(authority["documentation_pull_request"], {"owner": "GitHub App", "maximum": 1})
+    def _assert_worker_operational_authority(self, prompt: str) -> None:
+        normalized = " ".join(prompt.lower().split())
+        self.assertRegex(
+            normalized,
+            r"\bdo not\b[^.]*\b(?:write|push)\b[^.]*\b(?:author|contributor)\b[^.]*\bbranch\b",
+        )
+        self.assertRegex(normalized, r"\bdo not merge\b[^.]*\bpull request\b")
+        self.assertEqual(
+            re.findall(r"\b(?:may|can) create at most (\w+) app-owned documentation pull request\b", normalized),
+            ["one"],
+        )
+        self.assertNotRegex(
+            normalized,
+            r"\b(?:may|can|allowed to)\b[^.]*\b(?:write|push)\b[^.]*\b(?:author|contributor)\b[^.]*\bbranch\b",
+        )
+        self.assertNotRegex(normalized, r"\b(?:may|can|allowed to)\b[^.]*\bmerge\b")
 
     def test_formula_requires_an_explicit_root_with_complete_journey_and_budget_contract(self) -> None:
         formula = self._formula()
@@ -84,27 +81,26 @@ class DocsBootstrapFormulaTests(unittest.TestCase):
             with self.subTest(variable=name):
                 self.assertTrue(variables[name]["required"])
 
-        self._assert_reader_journey_contract(formula)
+        self._assert_required_journey_and_budgets_have_no_defaults(formula)
+        self.assertNotIn("contract", formula)
         self.assertNotIn("pull_request", variables)
         self.assertNotIn("pr_number", variables)
         self.assertNotIn("head_sha", variables)
 
-    def test_reader_journey_contract_rejects_defaults_and_unsupported_values(self) -> None:
+    def test_formula_rejects_defaults_without_owning_journey_value_validation(self) -> None:
         formula = self._formula()
-        self._assert_reader_journey_contract(formula)
+        self._assert_required_journey_and_budgets_have_no_defaults(formula)
 
         cases = (
             ("default budget", lambda value: value["vars"]["max_children"].update(default="8")),
             ("default journey field", lambda value: value["vars"]["techdocs_role"].update(default="reader")),
-            ("non-techdocs domain", lambda value: value["contract"]["reader_journey"].update(domain="product")),
-            ("unsupported policy", lambda value: value["contract"]["reader_journey"].update(backfill_policies=["anything"])),
         )
         for name, mutate in cases:
             with self.subTest(name=name):
                 invalid = copy.deepcopy(formula)
                 mutate(invalid)
                 with self.assertRaises(AssertionError):
-                    self._assert_reader_journey_contract(invalid)
+                    self._assert_required_journey_and_budgets_have_no_defaults(invalid)
 
     def test_formula_runs_only_the_explicit_root_lifecycle(self) -> None:
         steps = self._formula()["steps"]
@@ -145,22 +141,21 @@ class DocsBootstrapFormulaTests(unittest.TestCase):
         self.assertIn("idd-compliant child update", prompt.lower())
 
     def test_worker_authority_allows_only_one_app_owned_documentation_pr(self) -> None:
-        authority = self._worker_authority_contract()
-        self._assert_worker_authority(authority)
+        prompt = self._worker_prompt()
+        self._assert_worker_operational_authority(prompt)
 
         cases = (
-            ("author branch write", lambda value: value.update(author_branch_write_allowed=True)),
-            ("contributor branch write", lambda value: value.update(contributor_branch_write_allowed=True)),
-            ("merge", lambda value: value.update(merge_allowed=True)),
-            ("second documentation PR", lambda value: value["documentation_pull_request"].update(maximum=2)),
-            ("non-App PR owner", lambda value: value["documentation_pull_request"].update(owner="worker")),
+            ("author branch write", lambda value: re.sub(r"Do not write or push to\s+an author or contributor branch\.", "You may write to an author branch.", value)),
+            ("contributor branch write", lambda value: re.sub(r"Do not write or push to\s+an author or contributor branch\.", "You may push to a contributor branch.", value)),
+            ("merge", lambda value: value.replace("Do not merge a pull request.", "You may merge a pull request.")),
+            ("second documentation PR", lambda value: value.replace("at most one App-owned documentation pull request", "at most two App-owned documentation pull requests")),
+            ("non-App PR owner", lambda value: value.replace("App-owned documentation pull request", "worker-owned documentation pull request")),
         )
         for name, mutate in cases:
             with self.subTest(name=name):
-                invalid = copy.deepcopy(authority)
-                mutate(invalid)
+                invalid = mutate(prompt)
                 with self.assertRaises(AssertionError):
-                    self._assert_worker_authority(invalid)
+                    self._assert_worker_operational_authority(invalid)
 
     def test_agent_metadata_is_rig_scoped_and_not_a_fallback(self) -> None:
         metadata = tomllib.loads((AGENT_ROOT / "agent.toml").read_text(encoding="utf-8"))

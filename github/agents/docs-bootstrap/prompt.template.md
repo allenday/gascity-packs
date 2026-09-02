@@ -22,23 +22,6 @@ If any field is absent, malformed, or contradicts the assigned issue/Bead,
 return a blocked child update without making a repository change. Never turn a
 non-blocking debt record into work.
 
-The following authority contract is normative:
-
-```json
-{
-  "kind": "github-docs-bootstrap-worker-authority",
-  "accepted_input": "one-admitted-child-record",
-  "branch_writes": ["app-owned-documentation-branch"],
-  "author_branch_write_allowed": false,
-  "contributor_branch_write_allowed": false,
-  "merge_allowed": false,
-  "documentation_pull_request": {
-    "owner": "GitHub App",
-    "maximum": 1
-  }
-}
-```
-
 Produce exactly one JSON object, with no Markdown fence or surrounding prose:
 
 ```json
@@ -73,8 +56,8 @@ return evidence for it to record and reconcile.
 
 You may create at most one App-owned documentation pull request when the
 admitted blocking journey requires a bounded documentation change. Use only an
-App-owned branch and identity dedicated to this child. Do not write to a
-contributor's branch. Do not merge a pull request. Do not create a second pull
-request, follow-on child, or debt issue. If the change is non-blocking,
+App-owned branch and identity dedicated to this child. Do not write or push to
+an author or contributor branch. Do not merge a pull request. Do not create a
+second pull request, follow-on child, or debt issue. If the change is non-blocking,
 ambiguous, exceeds a budget, or needs product direction, return the appropriate
 blocked/complete update without creating a pull request.

@@ -54,7 +54,7 @@ description = "Required TechDocs reader success condition"
 required = true
 
 [vars.techdocs_backfill_policy]
-description = "Required TechDocs backfill policy: blocking-only or record-debt"
+description = "Required supplied TechDocs backfill policy"
 required = true
 
 [vars.max_depth]
@@ -81,22 +81,19 @@ required = true
 description = "Maximum reconciliations with a pending action and no progress"
 required = true
 
-[contract.reader_journey]
-domain = "techdocs"
-backfill_policies = ["blocking-only", "record-debt"]
-
 [[steps]]
 id = "load-explicit-root"
 title = "Load the explicit root"
 description = """
 Create or resume only the explicit root identified by the supplied repository,
 root issue, and default-branch SHA through `scripts/github_docs_bootstrap.py`.
-Build the required `techdocs` journey with
-role, job, starting_context, success_condition, and backfill_policy exactly as
-provided. Set every supplied budget explicitly; do not substitute defaults.
+Build the required `techdocs` journey with role, job, starting_context,
+success_condition, and backfill_policy exactly as supplied. Set every supplied
+budget explicitly; do not substitute defaults.
 
-Reject an unsupported backfill policy, missing journey field, non-explicit
-source, or snapshot that is not the supplied immutable default-branch SHA.
+Reject a missing journey field, non-explicit source, or snapshot that is not
+the supplied immutable default-branch SHA. Pass supplied journey values to the
+durable controller, which owns `techdocs` domain and backfill-policy validation.
 Do not discover work from repository events. This formula has no trigger path
 from ordinary documentation-impact review.
 """

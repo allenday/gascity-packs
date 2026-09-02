@@ -52,3 +52,13 @@ that other values are rejected. The worker prompt now carries a
 machine-readable authority contract, with negative mutations covering author
 and contributor branch writes, any merge authority, a second documentation
 pull request, and a non-App pull-request owner.
+
+## Review follow-up correction
+
+Removed the formula's fixed `techdocs` domain and backfill-policy allowlist:
+the formula requires every supplied journey value without defaults, while the
+durable controller owns supported-value validation. Replaced the auxiliary
+machine-readable worker authority block with tests that read and mutate the
+operative prompt prose itself. Those mutations prove the prompt rejects
+author/contributor branch writes, merges, a second documentation pull request,
+and a non-App-owned documentation pull request.
