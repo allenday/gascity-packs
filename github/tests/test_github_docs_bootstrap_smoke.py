@@ -7,20 +7,19 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-from github_docs_bootstrap import admit_child, new_root, project_actions, reconcile_root, record_child_update
+from github_docs_bootstrap import begin_journey, new_journey, project_actions, reconcile_root, record_child_update
 
 
 SHA = "a" * 40
 
 
-def root_request(*, backfill_policy: str = "blocking-only") -> dict[str, object]:
-    return {
-        "explicit": True,
+def journey_request(
+    *, source: dict[str, object] | None = None, backfill_policy: str = "blocking-only", documentation_index: str | None = None,
+) -> dict[str, object]:
+    root: dict[str, object] = {
         "repository_id": "17",
         "repository": "allenday/demo",
         "installation_id": "91",
-        "root_issue_number": 42,
-        "root_issue_url": "https://github.com/allenday/demo/issues/42",
         "default_branch": "main",
         "default_branch_sha": SHA,
         "domain": "techdocs",
@@ -38,6 +37,16 @@ def root_request(*, backfill_policy: str = "blocking-only") -> dict[str, object]
             "max_non_progress": 3,
         },
     }
+    if documentation_index is not None:
+        root["documentation_index"] = documentation_index
+    root["source"] = source or {
+        "kind": "github-issue",
+        "key": "github-issue:17:42",
+        "url": "https://github.com/allenday/demo/issues/42",
+        "issue_number": 42,
+        "projection_capabilities": ["issue-comment"],
+    }
+    return root
 
 
 def docs_change_required(*, disposition: str = "blocking") -> dict[str, object]:
@@ -91,9 +100,13 @@ class GraphAdapter:
 
 
 class DocsBootstrapSmokeTests(unittest.TestCase):
-    def test_blocking_journey_projects_one_child_pr_then_terminal_root(self) -> None:
-        root, action = admit_child(new_root(root_request(), now=100), docs_change_required(), now=101)
+    def test_docs_index_journey_projects_one_child_pr_then_terminal(self) -> None:
+        root, action = begin_journey(
+            journey_request(documentation_index="docs/index.md"), docs_change_required(), now=101,
+        )
+        assert root is not None and action is not None
         self.assertEqual(action["kind"], "create_issue")
+        self.assertEqual(root["documentation_root"], "docs/index.md")
         adapter = GraphAdapter()
 
         for _ in range(3):
@@ -116,15 +129,19 @@ class DocsBootstrapSmokeTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in adapter.calls], ["issue", "bead", "assignment", "pr"])
         self.assertEqual([action["kind"] for action in terminal_actions], ["post_root_status"])
 
-    def test_nonblocking_record_debt_stays_a_single_inactive_leaf(self) -> None:
-        root, action = admit_child(
-            new_root(root_request(backfill_policy="record-debt"), now=100),
-            docs_change_required(disposition="non-blocking"),
-            now=101,
+    def test_readme_fallback_and_nonblocking_debt_stay_inactive(self) -> None:
+        request = journey_request(backfill_policy="record-debt")
+        self.assertEqual(new_journey(request, now=100)["documentation_root"], "README.md")
+        root, action = begin_journey(
+            request, docs_change_required(disposition="non-blocking"), now=101,
         )
+        assert root is not None and action is not None
         adapter = GraphAdapter()
         root = project_actions(root, adapter)
-        replayed, duplicate = admit_child(root, docs_change_required(disposition="non-blocking"), now=102)
+        replayed, duplicate = begin_journey(
+            request, docs_change_required(disposition="non-blocking"), now=102, existing_journey=root,
+        )
+        assert replayed is not None
 
         self.assertEqual(action["kind"], "create_debt_issue")
         self.assertIsNone(duplicate)
@@ -133,9 +150,20 @@ class DocsBootstrapSmokeTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in adapter.calls], ["debt"])
         self.assertFalse(any(action["kind"] in {"create_issue", "create_bead", "assign_bead", "create_docs_pr"} for action in replayed["actions"]))
 
-    def test_ordinary_pr_decision_cannot_create_a_bootstrap_root(self) -> None:
-        with self.assertRaises(ValueError):
-            new_root(docs_change_required()["artifact"], now=100)
+    def test_generic_source_cannot_expand_another_journey(self) -> None:
+        request = journey_request()
+        journey, action = begin_journey(request, docs_change_required(), now=101)
+        assert journey is not None and action is not None
+        foreign_request = journey_request(source={
+            "kind": "generic", "key": "external:other", "url": "urn:external:other", "projection_capabilities": [],
+        })
+
+        continued, foreign_action = begin_journey(
+            foreign_request, docs_change_required(), now=102, existing_journey=journey,
+        )
+
+        self.assertIsNone(continued)
+        self.assertIsNone(foreign_action)
 
 
 if __name__ == "__main__":

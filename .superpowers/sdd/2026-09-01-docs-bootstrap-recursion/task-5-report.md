@@ -44,3 +44,29 @@ The new child-update bridge is controller-only; formula/runtime orchestration
 remains responsible for durably persisting the returned root between worker
 completion and projection, preserving the existing persist-before-action
 boundary.
+
+## V2 journey amendment
+
+The architecture now models source-agnostic documentation journeys rather than
+requiring an explicit bootstrap root. The smoke was amended to prove that a
+normalized source starts at a declared `docs/index.md` (or the `README.md`
+fallback), projects one blocking child through issue, Bead, and PR actions,
+then terminalizes the journey. It also proves that a `record-debt` finding
+creates one inactive debt leaf, and that a generic foreign source cannot
+continue another persisted journey.
+
+The focused test was first run after the refactor and failed because the new
+fixture did not attach its normalized source; correcting that test fixture
+allowed the v2 controller behavior to run. No GitHub mutation, formula, agent,
+or command-file change was made.
+
+### Amendment verification
+
+- `python3 -m unittest github.tests.test_github_docs_bootstrap_smoke -v` — 3
+  passed.
+- `git diff --check` — passed.
+- `python3 -m unittest discover -s github/tests -v` — 235 run; 4 failures
+  and 1 error outside the Task 5 smoke/README scope after the v2 migration:
+  legacy configured-projection expectations, the old bootstrap command mock
+  target, and one journey-formula wording assertion. These were not changed by
+  this task and require the controller/formula/command owners.

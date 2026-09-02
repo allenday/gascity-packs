@@ -54,20 +54,23 @@ before cancel/retry automation exists, release the intake lock manually:
 gc github release-workflow owner/repo 42
 ```
 
-## Explicit-root documentation bootstrap
+## Documentation journeys
 
-`github-docs-bootstrap` is a separate, operator-started baseline workflow. It
-does not run from ordinary pull-request documentation checks, labels, or
-webhooks. Start it only for one explicitly selected root issue and one
-immutable default-branch snapshot:
+Documentation traversal starts at a declared documentation index, or at
+`README.md` when no index is declared. A normalized source (an issue, a
+pull request, or an operator request) supplies provenance for a journey; an
+execution record is created automatically only when a blocking gap or a
+recorded debt requires durable external work. The command below supplies an
+explicit issue source and immutable default-branch snapshot:
 
 ```bash
-gc sling <rig>/docs-bootstrap github-docs-bootstrap --formula \
+gc sling <rig>/docs-journey github-docs-journey --formula \
   --var repository_id=<github-node-id> \
   --var repository=owner/repo \
   --var installation_id=<app-installation-id> \
-  --var root_issue_url=https://github.com/owner/repo/issues/123 \
-  --var root_issue_number=123 \
+  --var source_kind=github-issue \
+  --var source_key=github-issue:<github-node-id>:123 \
+  --var source_url=https://github.com/owner/repo/issues/123 \
   --var default_branch=main \
   --var default_branch_sha=<40-character-sha> \
   --var techdocs_role='<reader role>' \
@@ -80,11 +83,11 @@ gc sling <rig>/docs-bootstrap github-docs-bootstrap --formula \
   --var max_non_progress=3
 ```
 
-Prerequisites are a configured GitHub App installation with the durable
-bootstrap projection storage available, an explicit root issue, the pinned
-default-branch SHA, and the pack's vendored IDD and TechDocs skills. Every
-reader-journey field and budget is required; the formula intentionally has no
-defaults that could broaden scope.
+Prerequisites are a configured GitHub App installation with durable journey
+projection storage, a normalized source, the pinned default-branch SHA, and
+the pack's vendored IDD and TechDocs skills. Every reader-journey field and
+budget is required; the formula intentionally has no defaults that could
+broaden scope.
 
 The controller can finish as `baseline-complete`, `owner-review-required`,
 `blocked-on-product-decision`, `budget-exhausted`, or `cancelled`. An admitted
@@ -93,14 +96,12 @@ never writes to a contributor branch or merges. A non-blocking finding is
 recorded as debt (or ignored under `blocking-only`) and never dispatches the
 worker.
 
-The root driver records a worker result only when it echoes an already admitted
-child's provenance exactly. It may then stage that child's one App-owned PR
-from a `gas-city/` branch before reconciling the same root to terminal status.
-An ordinary pull-request review artifact has no root identity and cannot enter
-this admission path.
-
-Ordinary pull-request documentation checks remain review-only. They cannot
-start, expand, or otherwise invoke this bootstrap workflow.
+The journey driver records a worker result only when it echoes an already
+admitted child's provenance exactly. It may then stage that child's one
+App-owned PR from a `gas-city/` branch before reconciling the same journey to
+terminal status. A source may continue only its own persisted journey; an
+unbound or generic source cannot attach a decision to another journey, and a
+non-blocking debt remains an inactive leaf with no worker descendants.
 
 ## Import It
 
