@@ -13,11 +13,13 @@ from github_docs_bootstrap import (
     FileBootstrapStore,
     GitHubCityBootstrapAdapter,
     admit_child,
+    begin_traversal,
     new_root,
     project_configured_root,
     project_persisted_root,
     project_actions,
     reconcile_root,
+    select_documentation_root,
 )
 
 
@@ -373,6 +375,56 @@ class DocsBootstrapTests(unittest.TestCase):
         })
         self.assertEqual(root["debts"], [])
         self.assertEqual(root["debt_issues_used"], 0)
+        self.assertEqual(root["documentation_root"], "README.md")
+
+    def test_selects_declared_documentation_index_else_readme(self) -> None:
+        self.assertEqual(select_documentation_root(request(documentation_index="docs/index.md")), "docs/index.md")
+        self.assertEqual(select_documentation_root(request()), "README.md")
+        with self.assertRaises(ValueError):
+            select_documentation_root(request(documentation_index="../outside.md"))
+
+    def test_traversal_creates_an_execution_root_only_for_durable_work(self) -> None:
+        no_work, no_action = begin_traversal(request(), {"artifact": {"verdict": "no-impact"}}, now=100)
+        self.assertIsNone(no_work)
+        self.assertIsNone(no_action)
+
+        root, action = begin_traversal(request(documentation_index="docs/index.md"), decision(), now=100)
+        assert root is not None and action is not None
+        self.assertEqual(root["documentation_root"], "docs/index.md")
+        self.assertEqual(action["kind"], "create_issue")
+
+        debt_root, debt_action = begin_traversal(
+            request(backfill_policy="record-debt"), decision(journey_disposition="non-blocking"), now=100,
+        )
+        assert debt_root is not None and debt_action is not None
+        self.assertEqual(debt_action["kind"], "create_debt_issue")
+
+        automatic = request()
+        del automatic["explicit"]
+        execution_root, execution_action = begin_traversal(automatic, decision(), now=100)
+        self.assertIsNotNone(execution_root)
+        self.assertIsNotNone(execution_action)
+
+    def test_bound_pr_can_continue_its_root_while_unbound_pr_is_isolated(self) -> None:
+        existing = new_root(request(), now=100)
+        unbound, action = begin_traversal(request(pull_request={"number": 9}), decision(), now=101)
+        self.assertIsNone(unbound)
+        self.assertIsNone(action)
+
+        bound, action = begin_traversal(
+            request(pull_request={"number": 9, "bootstrap_identity": existing["identity"]}),
+            decision(), now=101, existing_root=existing,
+        )
+        assert bound is not None and action is not None
+        self.assertEqual(bound["identity"], existing["identity"])
+        self.assertEqual(action["kind"], "create_issue")
+
+        foreign, action = begin_traversal(
+            request(pull_request={"number": 9, "bootstrap_identity": "github-docs-bootstrap:other"}),
+            decision(), now=101, existing_root=existing,
+        )
+        self.assertIsNone(foreign)
+        self.assertIsNone(action)
 
     def test_new_root_rejects_non_explicit_and_invalid_identity_inputs(self) -> None:
         with self.assertRaises(ValueError):

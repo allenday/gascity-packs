@@ -56,6 +56,7 @@ def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
         raise ValueError("root_issue_number must be a positive integer")
     snapshot_sha = _sha(request.get("default_branch_sha"), "default_branch_sha")
     journey = _journey(request)
+    documentation_root = select_documentation_root(request)
     budgets = _budgets(request)
     identity = f"github-docs-bootstrap:{repository_id}:{root_issue_number}:{snapshot_sha}"
     return {
@@ -69,6 +70,7 @@ def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
         "root_issue_url": root_issue_url,
         "default_branch": default_branch,
         "default_branch_sha": snapshot_sha,
+        "documentation_root": documentation_root,
         "journey": journey,
         "created_at": now,
         "state": "active",
@@ -82,6 +84,58 @@ def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
         "debt_issues_used": 0,
         "non_progress_count": 0,
     }
+
+
+def select_documentation_root(request: dict[str, Any]) -> str:
+    """Select the declared documentation index, falling back to ``README.md``."""
+    if not isinstance(request, dict):
+        raise ValueError("documentation-root request must be an object")
+    if "documentation_index" not in request:
+        return "README.md"
+    path = request["documentation_index"]
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("documentation_index must be a non-empty path")
+    normalized = posixpath.normpath(path.strip())
+    if normalized in {".", ".."} or normalized.startswith("../") or normalized.startswith("/"):
+        raise ValueError("documentation_index is unsafe")
+    return normalized
+
+
+def begin_traversal(
+    request: dict[str, Any], decision: dict[str, Any], now: float, *, existing_root: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Create an execution root only for durable work, or continue a bound one.
+
+    A pull request is never an implicit expansion source: it must echo the
+    exact execution-root identity and documentation root to continue it.
+    """
+    if not isinstance(request, dict):
+        raise ValueError("traversal request must be an object")
+    pull_request = request.get("pull_request")
+    if pull_request is not None:
+        if not isinstance(pull_request, dict) or existing_root is None:
+            return None, None
+        root = _copy_root(existing_root)
+        if pull_request.get("bootstrap_identity") != root["identity"]:
+            return None, None
+        if select_documentation_root(request) != root.get("documentation_root"):
+            return None, None
+        return admit_child(root, decision, now)
+    if existing_root is not None:
+        return None, None
+    # Execution roots are controller-created after traversal proves durable
+    # work is needed; callers need not perform a separate explicit-root step.
+    candidate_request = copy.deepcopy(request)
+    candidate_request.setdefault("explicit", True)
+    candidate = new_root(candidate_request, now)
+    normalized = _exact_decision(candidate, decision)
+    if normalized is None:
+        return None, None
+    # A non-blocking gap under blocking-only has no durable work to own.
+    if (normalized["journey_disposition"] == "non-blocking"
+            and candidate["journey"]["backfill_policy"] == "blocking-only"):
+        return None, None
+    return admit_child(candidate, decision, now)
 
 
 def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:

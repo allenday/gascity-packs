@@ -136,3 +136,28 @@ git diff --check
 
 Output: focused suite 20/20; full GitHub suite 209/209; whitespace check
 passed. No Task 3 projection code was modified.
+
+## Documentation-root traversal follow-up
+
+The model now selects `documentation_index` when a request declares one and
+otherwise begins at `README.md`. The selected safe path is persisted as the
+root's `documentation_root`.
+
+`begin_traversal` is the pure execution-root gate. It returns no root for a
+non-durable result, creates an execution root only for blocking remediation or
+recorded debt, and permits a PR to continue only when it carries the exact
+persisted `bootstrap_identity` and the same documentation root. An unbound or
+mismatched PR returns no root and no action.
+
+Red tests first failed because the selection and traversal interfaces did not
+exist; a follow-up red test confirmed that controller-created execution roots
+do not require a caller-supplied `explicit` flag. Final verification:
+
+```sh
+python3 -m unittest github.tests.test_github_docs_bootstrap -v
+python3 -m unittest discover -s github/tests -p 'test_*.py'
+git diff --check
+```
+
+Output: focused suite 31/31; full GitHub suite 231/231; whitespace check
+passed. No Task 5 smoke file, GitHub state, plan, or ledger was modified.
