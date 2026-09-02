@@ -1,0 +1,4 @@
+interface:
+  display_name: "Managing Issue-Driven Development"
+  short_description: "Orchestrate issue DAGs, reviews, CI, and closure"
+  default_prompt: "Use $managing-issue-driven-development to deliver this work through its issue tracker and CI lifecycle."

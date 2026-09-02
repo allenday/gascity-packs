@@ -4,3 +4,8 @@ revision = "515477cbf62226ec7b18d6064995c78e9ad8dcd0"
 path = "skills/developer-experience-techdocs"
 license = "MIT"
 
+[managing_issue_driven_development]
+repository = "https://github.com/allenday/personal-agent-skills.git"
+revision = "515477cbf62226ec7b18d6064995c78e9ad8dcd0"
+path = "skills/managing-issue-driven-development"
+license = "MIT"

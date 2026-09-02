@@ -147,6 +147,40 @@ class GitHubIntakeCommonTests(unittest.TestCase):
 
         self.assertNotIn("details_url", request.call_args.kwargs["payload"])
 
+    @mock.patch.object(common, "github_api_list_request")
+    def test_find_github_issue_by_logical_id_adopts_matching_app_issue(self, request: mock.Mock) -> None:
+        marker = common.github_logical_id_marker("bootstrap-child:one:create_issue")
+        request.return_value = [{"number": 7, "body": "details\n" + marker, "user": {"login": "gas-city[bot]"}}]
+
+        found = common.find_issue_by_logical_id_with_token("token", "allenday", "demo", "bootstrap-child:one:create_issue", "gas-city[bot]")
+
+        self.assertEqual(found, {"number": 7, "body": "details\n" + marker, "user": {"login": "gas-city[bot]"}})
+        self.assertEqual(request.call_args.args[:2], ("GET", "/repos/allenday/demo/issues?state=all&per_page=100&page=1"))
+
+    @mock.patch.object(common, "github_api_list_request")
+    def test_find_github_issue_by_logical_id_rejects_prs_and_non_app_authors(self, request: mock.Mock) -> None:
+        marker = common.github_logical_id_marker("bootstrap-child:one:create_issue")
+        request.return_value = [
+            {"number": 7, "body": marker, "pull_request": {"url": "https://api.github.test/pulls/7"}, "user": {"login": "gas-city[bot]"}},
+            {"number": 8, "body": marker, "user": {"login": "contributor"}},
+        ]
+
+        found = common.find_issue_by_logical_id_with_token("token", "allenday", "demo", "bootstrap-child:one:create_issue", "gas-city[bot]")
+
+        self.assertIsNone(found)
+
+    @mock.patch.object(common, "github_api_request")
+    def test_create_github_issue_attaches_stable_logical_id_marker(self, request: mock.Mock) -> None:
+        request.return_value = {"number": 8}
+
+        created = common.create_issue_with_token("token", "allenday", "demo", "Docs gap", "Explain setup.", "bootstrap-child:one:create_issue")
+
+        self.assertEqual(created, {"number": 8})
+        self.assertEqual(request.call_args.args[:2], ("POST", "/repos/allenday/demo/issues"))
+        self.assertEqual(request.call_args.kwargs["payload"], {
+            "title": "Docs gap", "body": "Explain setup.\n\n" + common.github_logical_id_marker("bootstrap-child:one:create_issue"),
+        })
+
     @mock.patch.object(common, "github_api_request")
     def test_check_reconciliation_rejects_missing_or_malformed_pages(self, request: mock.Mock) -> None:
         for response in ({}, {"total_count": "1", "check_runs": []}, {"total_count": 1, "check_runs": {}}):

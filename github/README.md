@@ -54,6 +54,57 @@ before cancel/retry automation exists, release the intake lock manually:
 gc github release-workflow owner/repo 42
 ```
 
+## Documentation journeys
+
+Documentation traversal starts at a declared documentation index, or at
+`README.md` when no index is declared. A normalized source (an issue, a
+pull request, or an operator request) supplies provenance for a journey; an
+execution record is created automatically only when a blocking gap or a
+recorded debt requires durable external work. The command below supplies an
+explicit issue source and immutable default-branch snapshot:
+
+```bash
+gc sling <rig>/docs-journey github-docs-journey --formula \
+  --var repository_id=<github-node-id> \
+  --var repository=owner/repo \
+  --var installation_id=<app-installation-id> \
+  --var source_kind=github-issue \
+  --var source_key=github-issue:<github-node-id>:123 \
+  --var source_url=https://github.com/owner/repo/issues/123 \
+  --var docs_impact_source_key=github-pr:<github-node-id>:456:<head-sha> \
+  --var documentation_index=docs/README.md \
+  --var default_branch=main \
+  --var default_branch_sha=<40-character-sha> \
+  --var techdocs_role='<reader role>' \
+  --var techdocs_job='<reader job>' \
+  --var techdocs_starting_context='<starting context>' \
+  --var techdocs_success_condition='<success condition>' \
+  --var techdocs_backfill_policy=blocking-only \
+  --var max_depth=2 --var max_children=8 --var max_docs_prs=4 \
+  --var max_debt_issues=8 --var max_elapsed_seconds=86400 \
+  --var max_non_progress=3
+```
+
+Prerequisites are a configured GitHub App installation with durable journey
+projection storage, a normalized source, the pinned default-branch SHA, and
+the pack's vendored IDD and TechDocs skills. Every reader-journey field and
+budget is required; the formula intentionally has no defaults that could
+broaden scope.
+
+The controller can finish as `baseline-complete`, `owner-review-required`,
+`blocked-on-product-decision`, `budget-exhausted`, or `cancelled`. An admitted
+blocking child may yield at most one App-owned documentation pull request; it
+never writes to a contributor branch or merges. A non-blocking finding is
+recorded as debt (or ignored under `blocking-only`) and never dispatches the
+worker.
+
+The journey driver records a worker result only when it echoes an already
+admitted child's provenance exactly. It may then stage that child's one
+App-owned PR from a `gas-city/` branch before reconciling the same journey to
+terminal status. A source may continue only its own persisted journey; an
+unbound or generic source cannot attach a decision to another journey, and a
+non-blocking debt remains an inactive leaf with no worker descendants.
+
 ## Import It
 
 ```toml

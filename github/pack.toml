@@ -3,9 +3,9 @@ name = "github"
 version = "0.1.0"
 schema = 2
 
-# The docs-impact reviewer is packaged as agents/docs-impact-reviewer. It is
-# deliberately opt-in: this pack declares no always-running reviewer service
-# or scheduling policy.
+# The docs-impact reviewer and docs-journey worker are packaged under agents/.
+# Both are deliberately opt-in: this pack declares no always-running reviewer,
+# journey service, scheduling policy, or event-triggered expansion.
 
 [[service]]
 name = "github-webhook"
