@@ -73,6 +73,29 @@ class DocsPrReviewLifecycleTests(unittest.TestCase):
         self.assertEqual(duplicate.run, completed.run)
         self.assertEqual(duplicate.actions, ("ensure_terminal_check",))
 
+    def test_docs_change_required_enters_durable_journey_pending_without_terminalizing_check(self) -> None:
+        started = begin("42:7:head-a", now=100)
+
+        pending = reconcile(
+            started.run,
+            now=101,
+            head_is_current=True,
+            candidate=Candidate(identity="42:7:head-a", verdict="docs-change-required"),
+        )
+
+        self.assertEqual(pending.run.state, "journey-pending")
+        self.assertIsNone(pending.run.conclusion)
+        self.assertEqual(pending.actions, ("ensure_journey_pending_check",))
+
+        recovered = reconcile(
+            pending.run,
+            now=10_000,
+            head_is_current=True,
+        )
+
+        self.assertEqual(recovered.run, pending.run)
+        self.assertEqual(recovered.actions, ("ensure_journey_pending_check",))
+
     def test_changed_head_marks_the_old_run_stale_without_dispatching(self) -> None:
         started = begin("42:7:head-a", now=100)
 

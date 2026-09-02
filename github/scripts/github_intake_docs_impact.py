@@ -137,6 +137,12 @@ class AppProjection:
                 "summary": "Documentation review is in progress for this pull request revision.",
             })
             return
+        if action == "ensure_journey_pending_check":
+            self.gateway.ensure_check(run, "in_progress", {
+                "title": "Documentation impact: follow-up in progress",
+                "summary": "A documentation gap was found. Gas City is preparing the documentation follow-up for this pull request revision.",
+            })
+            return
         if action == "ensure_stale_check":
             self.gateway.ensure_check(run, "action_required", {
                 "title": "Documentation impact: stale revision",

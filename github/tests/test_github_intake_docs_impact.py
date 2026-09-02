@@ -46,6 +46,22 @@ def pull_request(*, head_repository: str = "allenday/demo", head_repository_id: 
 
 
 class DocsImpactProjectionTests(unittest.TestCase):
+    def test_journey_pending_keeps_the_original_check_in_progress(self) -> None:
+        class Gateway:
+            def __init__(self) -> None:
+                self.check: tuple[str, dict[str, str]] | None = None
+
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None:
+                self.check = (conclusion, output)
+
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = Gateway()
+            run = {"identity": "run", "external_id": "docs-impact:run", "assignment": {"identity": review()["identity"]}}
+            impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway).perform("ensure_journey_pending_check", run)
+
+        self.assertEqual(gateway.check[0], "in_progress")
+        self.assertEqual(gateway.check[1]["title"], "Documentation impact: follow-up in progress")
+
     def test_valid_same_repository_review_gets_an_app_owned_stacked_plan(self) -> None:
         plan = impact.followup_pr_plan(pull_request(), review())
 
