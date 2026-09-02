@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import pathlib
 import sys
 import tempfile
@@ -403,6 +404,35 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(restarted["actions"][0]["state"], "completed")
         self.assertEqual(run.call_args.args[1], "/configured-city")
         self.assertNotIn("/ambient-city", run.call_args.args[0])
+
+    @mock.patch("github_intake_service.run_subprocess")
+    def test_bead_description_carries_the_exact_admitted_child_record(self, run: mock.Mock) -> None:
+        child = {
+            "key": "child-key",
+            "journey_identity": "journey",
+            "snapshot_sha": SHA,
+            "decision_identity": {"source_key": "github-pr:17:9:" + SHA, "review_sha256": "b" * 64},
+            "decision_digest": "b" * 64,
+            "source_key": "github-issue:17:42",
+            "source_url": "https://github.com/allenday/demo/issues/42",
+            "documentation_entry_point": "README.md",
+            "parent_issue_url": "https://github.com/allenday/demo/issues/42",
+            "evidence_paths": ["README.md"],
+        }
+        action = {"id": "docs-journey-child:child-key:create_bead"}
+        run.side_effect = [
+            __import__("subprocess").CompletedProcess([], 0, "[]", ""),
+            __import__("subprocess").CompletedProcess([], 0, '{"id":"ga-1"}', ""),
+        ]
+
+        resource = GitHubCityBootstrapAdapter({"slug": "gas-city"}, city_root="/configured-city")._bead(
+            action, "Documentation journey: child-key", child,
+        )
+
+        command = run.call_args_list[1].args[0]
+        description = command[command.index("--description") + 1]
+        self.assertEqual(json.loads(description.split("\n", 1)[1]), child)
+        self.assertEqual(resource["id"], "ga-1")
 
     def test_projection_adopts_debt_issue_without_starting_active_work(self) -> None:
         root, action = admit_child(

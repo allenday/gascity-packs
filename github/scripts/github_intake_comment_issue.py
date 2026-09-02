@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 import github_intake_common as common
 
@@ -36,6 +37,8 @@ def read_body(args: argparse.Namespace) -> str:
     if args.body_file:
         with open(args.body_file, "r", encoding="utf-8") as handle:
             return handle.read()
+    if args.body_stdin:
+        return sys.stdin.read()
     return args.body
 
 
@@ -52,6 +55,7 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--body", default="", help="comment markdown")
     group.add_argument("--body-file", default="", help="path to a markdown file")
+    group.add_argument("--body-stdin", action="store_true", help="read comment markdown from standard input")
     args = parser.parse_args()
 
     try:

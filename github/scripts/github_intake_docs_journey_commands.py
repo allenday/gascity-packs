@@ -176,6 +176,12 @@ def main() -> int:
     parser.add_argument("--store", default=common.docs_review_runs_dir() + "-journeys")
     parser.add_argument("--identity")
     parser.add_argument("--input", help="strict JSON object for start-or-admit or record-child-update")
+    parser.add_argument(
+        "--max-passes",
+        type=int,
+        default=MAX_SETTLE_PASSES,
+        help="maximum projection/reconciliation passes for project-until-settled",
+    )
     args = parser.parse_args()
     try:
         if args.operation in {"project", "project-until-settled"}:
@@ -184,7 +190,7 @@ def main() -> int:
             result: Any = (
                 project_configured_journey(args.store, args.identity)
                 if args.operation == "project"
-                else project_until_settled(args.store, args.identity)
+                else project_until_settled(args.store, args.identity, max_passes=args.max_passes)
             )
         else:
             if args.identity is not None or args.input is None:

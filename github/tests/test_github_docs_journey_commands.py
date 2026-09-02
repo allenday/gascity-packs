@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import io
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
+import github_intake_docs_journey_commands as commands
 from github_intake_docs_journey_commands import _strict_json_object, project_until_settled, record_update, start_or_admit
 
 
@@ -73,6 +75,17 @@ def decision() -> dict[str, object]:
 
 
 class DocsJourneyCommandTests(unittest.TestCase):
+    @mock.patch.object(commands, "project_until_settled")
+    def test_cli_forwards_explicit_settle_bound(self, settle: mock.Mock) -> None:
+        settle.return_value = {"settled": True}
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", [
+            "github_intake_docs_journey_commands.py", "project-until-settled", "--once",
+            "--identity", "journey", "--max-passes", "3",
+        ]), mock.patch.object(sys, "stdout", output):
+            self.assertEqual(commands.main(), 0)
+        settle.assert_called_once_with(commands.common.docs_review_runs_dir() + "-journeys", "journey", max_passes=3)
+
     def test_project_until_settled_rejects_nonconvergent_pending_actions_at_its_bound(self) -> None:
         pending = {"state": "active", "actions": [{"id": "pending", "state": "pending"}], "children": []}
         with mock.patch("github_intake_docs_journey_commands.project_configured_journey", return_value=pending) as project:

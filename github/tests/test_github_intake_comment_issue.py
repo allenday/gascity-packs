@@ -11,6 +11,31 @@ import github_intake_comment_issue as comment_issue
 
 
 class GitHubIntakeCommentIssueTests(unittest.TestCase):
+    def test_main_reads_comment_body_from_standard_input(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "github_intake_comment_issue.py",
+                "owner/repo",
+                "42",
+                "--installation-id",
+                "repo-installation",
+                "--body-stdin",
+            ],
+        ), mock.patch.object(
+            comment_issue.common,
+            "load_effective_config",
+            return_value={"app": {"app_id": "repo-app", "private_key_pem": "pem"}},
+        ), mock.patch.object(
+            comment_issue.common,
+            "post_issue_comment",
+            return_value={"id": "100"},
+        ) as post_issue_comment, mock.patch.object(sys, "stdin", io.StringIO("ack from stdin")), mock.patch.object(sys, "stdout", io.StringIO()):
+            self.assertEqual(comment_issue.main(), 0)
+
+        self.assertEqual(post_issue_comment.call_args.args[5], "ack from stdin")
+
     def test_main_uses_profile_identity_when_provided(self) -> None:
         with mock.patch.object(
             sys,

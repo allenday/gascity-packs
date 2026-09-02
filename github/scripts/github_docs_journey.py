@@ -698,7 +698,7 @@ class GitHubCityBootstrapAdapter:
         return common.create_issue_with_token(token, owner, repo, title, body, str(action["id"]))
 
     def create_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
-        return self._bead(action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
+        return self._bead(action, f"{_run_label(root)}: {child['key'][:12]}", child)
 
     def assign_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
         import github_intake_service as service
@@ -767,7 +767,7 @@ class GitHubCityBootstrapAdapter:
             body + "\n\n" + common.github_logical_id_marker(str(action["id"])),
         )
 
-    def _bead(self, action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
+    def _bead(self, action: dict[str, Any], title: str, child: dict[str, Any]) -> dict[str, Any]:
         import github_intake_service as service
 
         lookup = service.run_subprocess(
@@ -785,7 +785,10 @@ class GitHubCityBootstrapAdapter:
             return {"id": service.bead_id(existing[0]), "logical_id": str(action["id"])}
         command = service.gc_bd_command(
             self.city_root, "create", "--json", title, "-t", "task",
-            "--description", "Documentation journey evidence:\n" + "\n".join(evidence_paths),
+            # The dispatched session receives the Bead rather than the
+            # controller's private request.  Carry the admitted child exactly
+            # so the worker can validate its complete, bounded provenance.
+            "--description", "Documentation journey admitted child JSON:\n" + json.dumps(child, sort_keys=True),
             "--external-ref", str(action["id"]),
             "--metadata", json.dumps({"external.source_key": str(action["id"])}, sort_keys=True),
         )
