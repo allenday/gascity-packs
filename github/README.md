@@ -313,6 +313,8 @@ The pack also exposes helper commands the workflow can call directly:
 
 ```bash
 gc github comment-issue owner/repo 42 --installation-id 123 --body "hello"
+printf '%s\n' "hello from stdin" | \
+  gc github comment-issue owner/repo 42 --installation-id 123 --body-stdin
 gc github comment-issue owner/repo 42 \
   --installation-id 234 \
   --github-app-identity mayor \
