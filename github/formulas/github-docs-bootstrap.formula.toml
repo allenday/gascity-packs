@@ -81,6 +81,10 @@ required = true
 description = "Maximum reconciliations with a pending action and no progress"
 required = true
 
+[contract.reader_journey]
+domain = "techdocs"
+backfill_policies = ["blocking-only", "record-debt"]
+
 [[steps]]
 id = "load-explicit-root"
 title = "Load the explicit root"

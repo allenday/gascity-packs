@@ -41,3 +41,14 @@ five tests pass.
 The formula is deliberately a contract surface over the durable controller
 implemented by Task 3. It does not add an event rule or a new service, so no
 ordinary pull-request documentation workflow can dispatch bootstrap work.
+
+## Review follow-up
+
+Strengthened the formula contract tests after review. Required reader-journey
+and budget variables now fail the test contract if they gain a default. The
+formula declares the only supported reader-journey domain (`techdocs`) and
+backfill values (`blocking-only`, `record-debt`); negative mutations prove
+that other values are rejected. The worker prompt now carries a
+machine-readable authority contract, with negative mutations covering author
+and contributor branch writes, any merge authority, a second documentation
+pull request, and a non-App pull-request owner.

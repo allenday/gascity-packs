@@ -22,6 +22,23 @@ If any field is absent, malformed, or contradicts the assigned issue/Bead,
 return a blocked child update without making a repository change. Never turn a
 non-blocking debt record into work.
 
+The following authority contract is normative:
+
+```json
+{
+  "kind": "github-docs-bootstrap-worker-authority",
+  "accepted_input": "one-admitted-child-record",
+  "branch_writes": ["app-owned-documentation-branch"],
+  "author_branch_write_allowed": false,
+  "contributor_branch_write_allowed": false,
+  "merge_allowed": false,
+  "documentation_pull_request": {
+    "owner": "GitHub App",
+    "maximum": 1
+  }
+}
+```
+
 Produce exactly one JSON object, with no Markdown fence or surrounding prose:
 
 ```json
