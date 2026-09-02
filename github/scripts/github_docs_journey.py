@@ -687,6 +687,15 @@ class GitHubCityBootstrapAdapter:
         if not self.app_login:
             raise ValueError("GitHub bootstrap projection requires a configured GitHub App slug")
 
+    def _bead_command(self, *args: str) -> list[str]:
+        """Address the configured review rig even when direct-BD is enabled."""
+        configured_rig = os.environ.get("GC_CITY_DOCS_REVIEW_RIG_DIR", "").strip()
+        if configured_rig:
+            rig = os.path.basename(configured_rig.rstrip("/"))
+            return [os.environ.get("GC_BIN", "gc"), "--city", self.city_root, "--rig", rig, "bd", *args]
+        import github_intake_service as service
+        return service.gc_bd_command(self.city_root, *args)
+
     def create_issue(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
         return self._issue(root, action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
 
@@ -714,8 +723,8 @@ class GitHubCityBootstrapAdapter:
         bead_id = str((resource or {}).get("id") or "").strip()
         if not bead_id:
             raise ValueError("assign_bead requires a completed create_bead resource")
-        command = service.gc_bd_command(
-            self.city_root, "update", bead_id, "--metadata",
+        command = self._bead_command(
+            "update", bead_id, "--metadata",
             json.dumps({
                 "bootstrap.assignment_action_id" if root.get("schema_version") == 1
                 else "docs-journey.assignment_action_id": action["id"],
@@ -776,8 +785,8 @@ class GitHubCityBootstrapAdapter:
         import github_intake_service as service
 
         lookup = service.run_subprocess(
-            service.gc_bd_command(
-                self.city_root, "list", "--json", "--all", "--metadata-field",
+            self._bead_command(
+                "list", "--json", "--all", "--metadata-field",
                 f"external.source_key={action['id']}", "--limit", "0",
             ),
             self.bead_workdir,
@@ -788,8 +797,8 @@ class GitHubCityBootstrapAdapter:
         existing = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
         if existing:
             return {"id": service.bead_id(existing[0]), "logical_id": str(action["id"])}
-        command = service.gc_bd_command(
-            self.city_root, "create", "--json", title, "-t", "task",
+        command = self._bead_command(
+            "create", "--json", title, "-t", "task",
             # The dispatched session receives the Bead rather than the
             # controller's private request.  Carry the admitted child exactly
             # so the worker can validate its complete, bounded provenance.
