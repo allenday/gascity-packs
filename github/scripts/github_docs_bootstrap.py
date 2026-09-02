@@ -27,6 +27,7 @@ DEFAULT_BUDGETS = {
     "max_depth": 2,
     "max_children": 8,
     "max_docs_prs": 4,
+    "max_debt_issues": 8,
     "max_elapsed_seconds": 24 * 60 * 60,
     "max_non_progress": 3,
 }
@@ -46,6 +47,7 @@ def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
     if type(root_issue_number) is not int or root_issue_number <= 0:
         raise ValueError("root_issue_number must be a positive integer")
     snapshot_sha = _sha(request.get("default_branch_sha"), "default_branch_sha")
+    journey = _journey(request)
     budgets = _budgets(request)
     identity = f"github-docs-bootstrap:{repository_id}:{root_issue_number}:{snapshot_sha}"
     return {
@@ -59,14 +61,17 @@ def new_root(request: dict[str, Any], now: float) -> dict[str, Any]:
         "root_issue_url": root_issue_url,
         "default_branch": default_branch,
         "default_branch_sha": snapshot_sha,
+        "journey": journey,
         "created_at": now,
         "state": "active",
         "budgets": budgets,
         "children": [],
+        "debts": [],
         "actions": [],
         "visited_surfaces": [],
         "children_used": 0,
         "docs_prs_used": 0,
+        "debt_issues_used": 0,
         "non_progress_count": 0,
     }
 
@@ -94,6 +99,8 @@ def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> t
         return updated, None
     if any(path in updated["visited_surfaces"] for path in normalized["paths"]):
         return updated, None
+    if normalized["journey_disposition"] == "non-blocking":
+        return _admit_debt(updated, normalized, key)
     depth = normalized["depth"]
     budgets = updated["budgets"]
     if depth > budgets["max_depth"] or updated["children_used"] >= budgets["max_children"] or updated["docs_prs_used"] >= budgets["max_docs_prs"]:
@@ -116,6 +123,33 @@ def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> t
     action = _action(f"bootstrap-child:{key}:create_issue", "create_issue", child_key=key)
     updated["actions"].append(action)
     return updated, action
+
+
+def _admit_debt(root: dict[str, Any], decision: dict[str, Any], key: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Record one non-executing documentation debt, never active work."""
+    if any(debt.get("key") == key for debt in root["debts"]):
+        return root, None
+    if root["journey"]["backfill_policy"] == "blocking-only":
+        root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(decision["paths"]))
+        return root, None
+    if root["debt_issues_used"] >= root["budgets"]["max_debt_issues"]:
+        return _terminal(root, "budget-exhausted")
+    root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(decision["paths"]))
+    debt = {
+        "key": key,
+        "root_issue_url": root["root_issue_url"],
+        "bootstrap_identity": root["identity"],
+        "snapshot_sha": root["default_branch_sha"],
+        "decision_identity": decision["identity"],
+        "decision_digest": decision["digest"],
+        "evidence_paths": decision["paths"],
+        "state": "recorded",
+    }
+    root["debts"].append(debt)
+    root["debt_issues_used"] += 1
+    action = _action(f"bootstrap-debt:{key}:create_debt_issue", "create_debt_issue", debt_key=key)
+    root["actions"].append(action)
+    return root, action
 
 
 def reconcile_root(root: dict[str, Any], now: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -164,7 +198,8 @@ def _reconcile_terminal(root: dict[str, Any], now: float) -> str | None:
     if now - root["created_at"] >= root["budgets"]["max_elapsed_seconds"]:
         return "budget-exhausted"
     budgets = root["budgets"]
-    if root["children_used"] >= budgets["max_children"] or root["docs_prs_used"] >= budgets["max_docs_prs"]:
+    if (root["children_used"] >= budgets["max_children"] or root["docs_prs_used"] >= budgets["max_docs_prs"]
+            or root["debt_issues_used"] >= budgets["max_debt_issues"]):
         return "budget-exhausted"
     children = root["children"]
     if children and all(child.get("state") in _COMPLETE_CHILD_STATES for child in children):
@@ -181,13 +216,18 @@ def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | Non
         product_ambiguity = False
         depth = 1
         if "artifact" in decision:
-            if set(decision) - {"artifact", "product_ambiguity", "depth"}:
+            if set(decision) - {"artifact", "product_ambiguity", "depth", "journey_disposition"}:
                 return None
             artifact = decision["artifact"]
             product_ambiguity = decision.get("product_ambiguity", False)
             depth = decision.get("depth", 1)
+            journey_disposition = decision.get("journey_disposition")
             if type(product_ambiguity) is not bool:
                 return None
+            if journey_disposition not in {"blocking", "non-blocking"}:
+                return None
+        else:
+            return None
         review = docs_patch.validate_agent_review(artifact)
         if review["verdict"] != "docs-change-required":
             return None
@@ -206,6 +246,7 @@ def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | Non
         "digest": review["review_sha256"],
         "snapshot_sha": identity["head_sha"],
         "product_ambiguity": product_ambiguity,
+        "journey_disposition": journey_disposition,
     }
 
 
@@ -309,11 +350,12 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(root, dict) or root.get("state") not in {"active", *TERMINAL_STATES}:
         raise ValueError("root is invalid")
     result = copy.deepcopy(root)
-    for key in ("children", "actions", "visited_surfaces"):
+    for key in ("children", "debts", "actions", "visited_surfaces"):
         if not isinstance(result.get(key), list):
             raise ValueError(f"root {key} must be a list")
     result["budgets"] = _validate_budgets(result.get("budgets"))
-    for key in ("children_used", "docs_prs_used", "non_progress_count"):
+    result["journey"] = _journey(result.get("journey"))
+    for key in ("children_used", "docs_prs_used", "debt_issues_used", "non_progress_count"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise ValueError(f"root {key} must be a non-negative integer")
     return result
@@ -345,6 +387,26 @@ def _required_text(value: dict[str, Any], key: str) -> str:
     if not isinstance(text, str) or not text.strip():
         raise ValueError(f"{key} is required")
     return text.strip()
+
+
+def _journey(value: Any) -> dict[str, str]:
+    """Validate the fixed reader journey without inferring any of its content."""
+    if not isinstance(value, dict):
+        raise ValueError("reader journey is required")
+    domain = _required_text(value, "domain")
+    if domain != "techdocs":
+        raise ValueError("domain must be techdocs")
+    result = {
+        "domain": domain,
+        "role": _required_text(value, "role"),
+        "job": _required_text(value, "job"),
+        "starting_context": _required_text(value, "starting_context"),
+        "success_condition": _required_text(value, "success_condition"),
+        "backfill_policy": _required_text(value, "backfill_policy"),
+    }
+    if result["backfill_policy"] not in {"blocking-only", "record-debt"}:
+        raise ValueError("backfill_policy is unsupported")
+    return result
 
 
 def _normalized_paths(evidence: list[dict[str, str]]) -> list[str]:

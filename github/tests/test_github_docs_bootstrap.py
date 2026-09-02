@@ -23,6 +23,12 @@ def request(**overrides: object) -> dict[str, object]:
         "root_issue_url": "https://github.com/allenday/demo/issues/42",
         "default_branch": "main",
         "default_branch_sha": SHA,
+        "domain": "techdocs",
+        "role": "developer",
+        "job": "install the package",
+        "starting_context": "a clone of the repository",
+        "success_condition": "the package is installed successfully",
+        "backfill_policy": "blocking-only",
     }
     root.update(overrides)
     return root
@@ -31,6 +37,7 @@ def request(**overrides: object) -> dict[str, object]:
 def decision(**overrides: object) -> dict[str, object]:
     product_ambiguity = overrides.pop("product_ambiguity", False)
     depth = overrides.pop("depth", None)
+    journey_disposition = overrides.pop("journey_disposition", "blocking")
     result: dict[str, object] = {
         "schema_version": 1,
         "kind": "github-pr-docs-impact-review",
@@ -52,7 +59,7 @@ def decision(**overrides: object) -> dict[str, object]:
         "proposal": None,
     }
     result.update(overrides)
-    metadata: dict[str, object] = {"artifact": result}
+    metadata: dict[str, object] = {"artifact": result, "journey_disposition": journey_disposition}
     if product_ambiguity:
         metadata["product_ambiguity"] = True
     if depth is not None:
@@ -163,18 +170,41 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(root["identity"], f"github-docs-bootstrap:17:42:{SHA}")
         self.assertEqual(root["state"], "active")
         self.assertEqual(root["budgets"], {
-            "max_depth": 2, "max_children": 8, "max_docs_prs": 4,
+            "max_depth": 2, "max_children": 8, "max_docs_prs": 4, "max_debt_issues": 8,
             "max_elapsed_seconds": 24 * 60 * 60, "max_non_progress": 3,
         })
         self.assertEqual(root["children"], [])
         self.assertEqual(root["visited_surfaces"], [])
         self.assertEqual(root["created_at"], 100)
+        self.assertEqual(root["journey"], {
+            "domain": "techdocs", "role": "developer", "job": "install the package",
+            "starting_context": "a clone of the repository",
+            "success_condition": "the package is installed successfully", "backfill_policy": "blocking-only",
+        })
+        self.assertEqual(root["debts"], [])
+        self.assertEqual(root["debt_issues_used"], 0)
 
     def test_new_root_rejects_non_explicit_and_invalid_identity_inputs(self) -> None:
         with self.assertRaises(ValueError):
             new_root(request(explicit=False), now=100)
         with self.assertRaises(ValueError):
             new_root(request(default_branch_sha="not-a-sha"), now=100)
+
+    def test_new_root_requires_the_supported_techdocs_journey_contract(self) -> None:
+        for field, value in (
+            ("domain", "sales"), ("role", ""), ("job", ""), ("starting_context", ""),
+            ("success_condition", ""), ("backfill_policy", "later"),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    new_root(request(**{field: value}), now=100)
+
+        for field in ("domain", "role", "job", "starting_context", "success_condition", "backfill_policy"):
+            with self.subTest(missing=field):
+                incomplete = request()
+                del incomplete[field]
+                with self.assertRaises(ValueError):
+                    new_root(incomplete, now=100)
 
     def test_admission_binds_exact_decision_and_normalized_evidence_paths(self) -> None:
         root = new_root(request(), now=100)
@@ -197,6 +227,44 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(replayed, root)
         self.assertIsNone(second)
         self.assertIsNotNone(first)
+
+    def test_non_blocking_gap_is_debt_only_under_record_debt(self) -> None:
+        root = new_root(request(backfill_policy="record-debt"), now=100)
+        updated, action = admit_child(root, decision(journey_disposition="non-blocking"), now=101)
+
+        self.assertEqual(action["kind"], "create_debt_issue")
+        self.assertEqual(updated["children"], [])
+        self.assertEqual(updated["children_used"], 0)
+        self.assertEqual(updated["docs_prs_used"], 0)
+        self.assertEqual(updated["debt_issues_used"], 1)
+        self.assertEqual(len(updated["debts"]), 1)
+        self.assertEqual([item["kind"] for item in updated["actions"]], ["create_debt_issue"])
+        self.assertNotIn("bead", action["kind"])
+
+        replayed, duplicate = admit_child(updated, decision(journey_disposition="non-blocking"), now=102)
+        self.assertEqual(replayed, updated)
+        self.assertIsNone(duplicate)
+
+    def test_non_blocking_gap_emits_no_intent_under_blocking_only(self) -> None:
+        root = new_root(request(backfill_policy="blocking-only"), now=100)
+        updated, action = admit_child(root, decision(journey_disposition="non-blocking"), now=101)
+
+        self.assertIsNone(action)
+        self.assertEqual(updated["actions"], [])
+        self.assertEqual(updated["children"], [])
+        self.assertEqual(updated["debts"], [])
+
+    def test_non_blocking_debt_budget_terminalizes_without_active_work(self) -> None:
+        root = new_root(request(backfill_policy="record-debt"), now=100)
+        root["debt_issues_used"] = 8
+        updated, action = admit_child(root, decision(journey_disposition="non-blocking"), now=101)
+
+        self.assertEqual(updated["state"], "budget-exhausted")
+        self.assertEqual(action["kind"], "post_root_status")
+        self.assertEqual(updated["children"], [])
+        self.assertEqual(updated["debts"], [])
+        self.assertEqual(updated["visited_surfaces"], [])
+        self.assertEqual([item["kind"] for item in updated["actions"]], ["post_root_status"])
 
     def test_visited_surface_suppresses_a_distinct_decision(self) -> None:
         root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
