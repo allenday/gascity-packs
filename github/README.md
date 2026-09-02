@@ -93,6 +93,12 @@ never writes to a contributor branch or merges. A non-blocking finding is
 recorded as debt (or ignored under `blocking-only`) and never dispatches the
 worker.
 
+The root driver records a worker result only when it echoes an already admitted
+child's provenance exactly. It may then stage that child's one App-owned PR
+from a `gas-city/` branch before reconciling the same root to terminal status.
+An ordinary pull-request review artifact has no root identity and cannot enter
+this admission path.
+
 Ordinary pull-request documentation checks remain review-only. They cannot
 start, expand, or otherwise invoke this bootstrap workflow.
 

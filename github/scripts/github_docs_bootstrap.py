@@ -133,6 +133,63 @@ def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> t
     return updated, action
 
 
+def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Record one qualified worker result and stage its optional App PR.
+
+    This is deliberately a root-driver operation, not an ordinary pull-request
+    intake path.  The worker can update only an already admitted child whose
+    provenance it echoes exactly; it cannot admit another review decision.
+    """
+    updated = _copy_root(root)
+    if updated["state"] in TERMINAL_STATES or not isinstance(update, dict):
+        return updated, None
+    if update.get("schema_version") != 1 or update.get("kind") != "github-docs-bootstrap-child-update":
+        return updated, None
+    admitted = update.get("admitted_child")
+    if not isinstance(admitted, dict):
+        return updated, None
+    child = next((item for item in updated["children"] if _same_child_provenance(item, admitted)), None)
+    if child is None or child.get("state") != "admitted":
+        return updated, None
+    state = update.get("state")
+    if state not in _COMPLETE_CHILD_STATES:
+        return updated, None
+    documentation_pr = update.get("documentation_pr")
+    if documentation_pr is not None and not isinstance(documentation_pr, dict):
+        return updated, None
+    if documentation_pr is not None:
+        branch = documentation_pr.get("branch")
+        if not isinstance(branch, str) or not branch.startswith("gas-city/"):
+            return updated, None
+    child["state"] = state
+    if documentation_pr is None:
+        return updated, None
+    if updated["docs_prs_used"] >= updated["budgets"]["max_docs_prs"]:
+        return _terminal(updated, "budget-exhausted")
+    action_id = _child_action_id(child, "create_docs_pr")
+    if any(action.get("id") == action_id for action in updated["actions"]):
+        return updated, None
+    action = _action(
+        action_id, "create_docs_pr", child_key=child["key"], branch=branch,
+        title=str(documentation_pr.get("title") or "Documentation bootstrap follow-up"),
+        body=str(documentation_pr.get("body") or "App-owned documentation bootstrap follow-up."),
+        base=str(documentation_pr.get("base") or updated["default_branch"]),
+    )
+    updated["actions"].append(action)
+    updated["docs_prs_used"] += 1
+    return updated, action
+
+
+def _same_child_provenance(child: dict[str, Any], admitted: dict[str, Any]) -> bool:
+    return all(
+        admitted.get(field) == child.get(field)
+        for field in (
+            "bootstrap_identity", "snapshot_sha", "decision_identity", "decision_digest",
+            "root_issue_url", "parent_issue_url", "evidence_paths",
+        )
+    )
+
+
 def _admit_debt(root: dict[str, Any], decision: dict[str, Any], key: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Record one non-executing documentation debt, never active work."""
     if any(debt.get("key") == key for debt in root["debts"]):
@@ -205,13 +262,13 @@ def _reconcile_terminal(root: dict[str, Any], now: float) -> str | None:
         return "blocked-on-product-decision"
     if now - root["created_at"] >= root["budgets"]["max_elapsed_seconds"]:
         return "budget-exhausted"
+    children = root["children"]
+    if children and all(child.get("state") in _COMPLETE_CHILD_STATES for child in children):
+        return "baseline-complete"
     budgets = root["budgets"]
     if (root["children_used"] >= budgets["max_children"] or root["docs_prs_used"] >= budgets["max_docs_prs"]
             or root["debt_issues_used"] >= budgets["max_debt_issues"]):
         return "budget-exhausted"
-    children = root["children"]
-    if children and all(child.get("state") in _COMPLETE_CHILD_STATES for child in children):
-        return "baseline-complete"
     return None
 
 
