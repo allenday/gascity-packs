@@ -119,7 +119,7 @@ stateDiagram-v2
     Reviewing --> JourneyPending: docs-change-required
     JourneyPending --> ChildProjected: issue + rig Bead + assignment
     ChildProjected --> WorkerRunning: City routes admitted child
-    WorkerRunning --> BranchReady: App branch + immutable commit evidence
+    WorkerRunning --> BranchReady: App branch + commit SHA evidence
     WorkerRunning --> ActionRequired: blocked / budget / ambiguity
     BranchReady --> StackedPROpen: controller validates and opens PR
     StackedPROpen --> Reviewing: documentation revision is reviewed
@@ -131,8 +131,8 @@ The worker participates only in `WorkerRunning`. It receives one admitted
 child record, validates its exact provenance, and may prepare one dedicated
 `gas-city/<child-key>` branch. It cannot expand the journey, open a pull
 request, merge, or turn a debt record into work. The controller validates the
-returned branch evidence, creates the stacked PR, and publishes terminal
-status.
+returned branch name, the 40-character branch commit SHA, and evidence before
+it creates the stacked PR and publishes terminal status.
 
 ## Import It
 
@@ -342,6 +342,7 @@ The pack also exposes helper commands the workflow can call directly:
 
 ```bash
 gc github comment-issue owner/repo 42 --installation-id 123 --body "hello"
+gc github comment-issue owner/repo 42 --installation-id 123 --body-file ./comment.md
 printf '%s\n' "hello from stdin" | \
   gc github comment-issue owner/repo 42 --installation-id 123 --body-stdin
 gc github comment-issue owner/repo 42 \
@@ -351,3 +352,7 @@ gc github comment-issue owner/repo 42 \
 gc github push-branch owner/repo --installation-id 123 --branch fix-42
 gc github create-pr owner/repo --installation-id 123 --base main --head fix-42 --title "fix: widget"
 ```
+
+Use `gc github comment-issue` only from trusted workflow code that owns GitHub
+writes. A `docs-journey` worker returns its child-update JSON to the journey
+controller instead of posting the lifecycle result itself.

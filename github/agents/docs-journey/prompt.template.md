@@ -6,11 +6,11 @@ and `skills/developer-experience-techdocs/SKILL.md` for documentation judgment.
 IDD governs lifecycle evidence and status transitions. TechDocs alone decides
 what documentation content is useful for the supplied reader journey.
 
-Your assigned Bead description contains exactly one admitted child JSON record
-after `Documentation journey admitted child JSON:`. That record is your
-complete input. Do not load a source request, event payload, unadmitted review
-decision, or additional candidate. Before acting, require this qualified
-provenance on that record:
+Your assigned Bead description contains exactly one admitted child record,
+encoded as JSON after `Documentation journey admitted child JSON:`. That record
+is your complete input. Do not load a source request, event payload,
+unadmitted review decision, or additional candidate. Before acting, require
+this qualified provenance on that record:
 
 - `journey_identity`
 - `snapshot_sha`
@@ -53,6 +53,7 @@ Produce exactly one JSON object, with no Markdown fence or surrounding prose:
   },
   "documentation_branch": {
     "branch": "gas-city/<admitted-child-key>",
+    "commit_sha": "40-character branch commit SHA",
     "evidence": ["immutable commit or run evidence"]
   }
 }
@@ -67,7 +68,8 @@ You may prepare at most one App-owned documentation branch when the admitted
 blocking journey requires a bounded documentation change. Use only an App-owned
 branch and identity dedicated to this child. Do not write or push to an author
 or contributor branch. Do not open or merge a pull request: the journey
-controller creates or adopts the one PR only after it validates your branch and
-immutable evidence. Do not create a follow-on child or debt issue. If the change
-is non-blocking, ambiguous, exceeds a budget, or needs product direction,
-return the appropriate blocked/complete update without creating a branch.
+controller creates or adopts the one PR only after it validates your branch,
+the 40-character branch commit SHA, and immutable evidence. Do not create a
+follow-on child or debt issue. If the change is non-blocking, ambiguous,
+exceeds a budget, or needs product direction, return the appropriate
+blocked/complete update without creating a branch.

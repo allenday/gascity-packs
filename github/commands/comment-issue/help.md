@@ -6,6 +6,10 @@ Examples:
     --github-app-identity mayor \
     --body "Started work on this issue"
 
+  gc github comment-issue owner/repo 42 \
+    --installation-id 123456 \
+    --body-file ./comment.md
+
   printf '%s\n' "Started work on this issue" | \
     gc github comment-issue owner/repo 42 \
       --installation-id 123456 \
