@@ -53,7 +53,12 @@ def begin(
     if existing is not None:
         if existing.identity != identity:
             raise ValueError("existing run identity differs from delivery identity")
-        action = "ensure_stale_check" if existing.state == "stale" else "ensure_terminal_check" if existing.state == "terminal" else "ensure_check"
+        action = (
+            "ensure_stale_check" if existing.state == "stale"
+            else "ensure_terminal_check" if existing.state == "terminal"
+            else "ensure_journey_pending_check" if existing.state == "journey-pending"
+            else "ensure_check"
+        )
         return Transition(existing, (action,))
     if not identity:
         raise ValueError("review identity is required")
@@ -90,12 +95,29 @@ def reconcile(
             _terminal(run, "stale"),
             ("ensure_stale_check",),
         )
+    # A validated documentation gap is now owned by the docs-journey
+    # controller.  The review deadline and worker lease apply only to the
+    # reviewer; do not convert its pending handoff into a visible failure.
+    if run.state == "journey-pending":
+        return Transition(run, ("ensure_journey_pending_check",))
     if now >= run.deadline_at:
         return Transition(
             _terminal(run, "action_required"),
             ("ensure_terminal_check",),
         )
     if candidate is not None and candidate.identity == run.identity:
+        if candidate.verdict == "docs-change-required":
+            return Transition(
+                DocsReviewRun(
+                    identity=run.identity,
+                    state="journey-pending",
+                    created_at=run.created_at,
+                    deadline_at=run.deadline_at,
+                    lease_until=run.lease_until,
+                    attempt=run.attempt,
+                ),
+                ("ensure_journey_pending_check",),
+            )
         conclusion = "success" if candidate.verdict in SUCCESS_VERDICTS else "action_required"
         return Transition(_terminal(run, conclusion), ("ensure_terminal_check",))
     if now >= run.lease_until:

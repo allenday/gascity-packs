@@ -194,6 +194,24 @@ class DocsReviewRuntimeTests(unittest.TestCase):
         self.assertEqual(self.store.load(run["identity"])["conclusion"], "action_required")
         self.assertEqual(self.adapter.actions, [("ensure_terminal_check", run["identity"]), ("ensure_terminal_check", run["identity"])])
 
+    def test_docs_change_required_persists_a_journey_pending_run_without_terminal_check(self) -> None:
+        source = assignment()
+        run = runtime.intake_delivery(self.store, source, self.adapter, now=100)
+        self.adapter.actions.clear()
+
+        accepted = runtime.accept_candidate(
+            self.store,
+            candidate(source, "docs-change-required"),
+            self.adapter,
+            now=101,
+        )
+
+        self.assertTrue(accepted["accepted"])
+        stored = self.store.load(run["identity"])
+        self.assertEqual(stored["state"], "journey-pending")
+        self.assertIsNone(stored["conclusion"])
+        self.assertEqual(self.adapter.actions, [("ensure_journey_pending_check", run["identity"])])
+
     def test_concurrent_valid_candidates_allow_only_one_terminal_winner(self) -> None:
         source = assignment()
         self.store = runtime.FileDocsReviewStore(pathlib.Path(self.tempdir.name))
