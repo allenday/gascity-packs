@@ -104,3 +104,22 @@
   budget.  Deadline and terminal reconciliation remain in the no-pending path.
 - Added staged issue → bead → assignment coverage proving normal successful
   passes remain active and leave the non-progress budget at zero.
+
+## Pending-retry and terminal-preflight remediation (2026-09-02)
+
+- Configured projection now evaluates terminal conditions before dispatching a
+  persisted external action.  A cancelled, stale, owner-review, deadline, or
+  budget-terminal root is saved as terminal and performs no pending adapter
+  call.
+- A failed pending adapter projection is reconciled and saved as a durable
+  no-progress retry. Repeated failures increment `non_progress_count` and
+  terminalize at the configured limit, while successful staged successors
+  still reset the counter.
+- Added coverage for repeated adapter failures through budget exhaustion and
+  for an owner-review terminal change while an issue action remains pending.
+
+### Remediation verification
+
+`python3 -m unittest github.tests.test_github_docs_bootstrap github.tests.test_github_docs_bootstrap_commands github.tests.test_github_intake_common -v`
+
+- 75 tests passed.

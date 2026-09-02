@@ -485,14 +485,30 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
         root = store.load(identity)
         if root is None:
             raise ValueError("bootstrap root was not found")
-        # Newly persisted and staged actions are normal progress, not retry
-        # failures.  Reconciliation remains for roots with no action to
-        # project, preserving deadline and terminal-state checks.
+
+        # A terminal transition always wins over an outstanding projection.
+        # In particular, do not let a previously persisted external action
+        # escape a later cancellation, deadline, review, or budget limit.
+        now = time.time()
+        if root["state"] in TERMINAL_STATES:
+            return store.save(root)
+        terminal_state = _reconcile_terminal(root, now)
+        if terminal_state is not None:
+            terminal_root, _ = _terminal(_copy_root(root), terminal_state)
+            return store.save(terminal_root)
+
+        # Persisted staged successors are normal progress and project without
+        # consuming the retry budget.  Conversely, a failed adapter attempt
+        # leaves the action pending; reconcile it durably so repeated calls
+        # are bounded by the root's non-progress budget.
         if _pending(root):
-            return project_actions(root, GitHubCityBootstrapAdapter(app), persist=store.save)
+            try:
+                return project_actions(root, GitHubCityBootstrapAdapter(app), persist=store.save)
+            except Exception:
+                retried, _ = reconcile_root(root, now=now)
+                return store.save(retried)
         reconciled, _ = reconcile_root(root, now=time.time())
-        store.save(reconciled)
-        return project_actions(reconciled, GitHubCityBootstrapAdapter(app), persist=store.save)
+        return store.save(reconciled)
 
 
 def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) -> None:

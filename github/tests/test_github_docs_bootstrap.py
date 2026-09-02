@@ -160,6 +160,48 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(third["non_progress_count"], 0)
         self.assertEqual(adapter.created["assignment"], ["bootstrap-child:" + root["children"][0]["key"] + ":assign_bead"])
 
+    @mock.patch("github_docs_bootstrap.GitHubCityBootstrapAdapter")
+    @mock.patch("github_docs_bootstrap.common.load_effective_config")
+    @mock.patch("github_docs_bootstrap.time.time", return_value=102)
+    def test_configured_projection_counts_repeated_pending_failures_and_terminalizes_at_limit(
+        self, now: mock.Mock, load_config: mock.Mock, adapter_class: mock.Mock,
+    ) -> None:
+        root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
+        adapter = RecordingAdapter(fail_after={"issue"})
+        load_config.return_value = {"app": {"slug": "gas-city"}}
+        adapter_class.return_value = adapter
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            first = project_configured_root(directory, root["identity"])
+            second = project_configured_root(directory, root["identity"])
+            exhausted = project_configured_root(directory, root["identity"])
+
+        self.assertEqual(first["non_progress_count"], 1)
+        self.assertEqual(second["non_progress_count"], 2)
+        self.assertEqual(exhausted["state"], "budget-exhausted")
+        self.assertEqual(adapter.created["issue"], [root["actions"][0]["id"]])
+
+    @mock.patch("github_docs_bootstrap.GitHubCityBootstrapAdapter")
+    @mock.patch("github_docs_bootstrap.common.load_effective_config")
+    @mock.patch("github_docs_bootstrap.time.time", return_value=102)
+    def test_configured_projection_terminalizes_before_projecting_pending_action(
+        self, now: mock.Mock, load_config: mock.Mock, adapter_class: mock.Mock,
+    ) -> None:
+        root, _ = admit_child(new_root(request(), now=100), decision(), now=101)
+        root["owner_review_required"] = True
+        adapter = RecordingAdapter()
+        load_config.return_value = {"app": {"slug": "gas-city"}}
+        adapter_class.return_value = adapter
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            terminal = project_configured_root(directory, root["identity"])
+
+        self.assertEqual(terminal["state"], "owner-review-required")
+        self.assertEqual(adapter.created["issue"], [])
+        self.assertEqual(terminal["actions"][0]["state"], "pending")
+
     @mock.patch("github_docs_bootstrap.common.create_issue_with_token")
     @mock.patch("github_docs_bootstrap.common.find_issue_by_logical_id_with_token", return_value=None)
     @mock.patch("github_docs_bootstrap.common.create_installation_token", return_value="installation-token")
