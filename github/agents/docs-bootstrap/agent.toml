@@ -1,3 +1,0 @@
-description = "GitHub explicit-root documentation bootstrap worker"
-scope = "rig"
-fallback = false

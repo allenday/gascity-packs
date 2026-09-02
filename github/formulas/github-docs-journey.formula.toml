@@ -1,11 +1,12 @@
 description = """
-Explicit-root documentation bootstrap workflow.
+Source-agnostic documentation journey workflow.
 
-This formula starts only when an operator supplies one root issue and its
-immutable default-branch snapshot. It is not an event rule or review hook:
-ordinary documentation-impact checks cannot expand this workflow.
+Every source adapter supplies a normalized source envelope and immutable
+default-branch snapshot. The documentation entry point is navigation, not an
+execution root; this formula does not privilege a GitHub issue, pull request,
+or operator request.
 """
-formula = "github-docs-bootstrap"
+formula = "github-docs-journey"
 version = 1
 
 [vars]
@@ -18,19 +19,23 @@ description = "Repository in owner/repo format"
 required = true
 
 [vars.installation_id]
-description = "GitHub App installation id that owns root projection"
+description = "GitHub App installation id that owns journey projection"
 required = true
 
-[vars.root_issue_url]
-description = "Explicit operator-selected root issue URL"
+[vars.source_kind]
+description = "Normalized request source kind, such as github-issue, github-pull-request, or explicit"
 required = true
 
-[vars.root_issue_number]
-description = "Explicit operator-selected root issue number"
+[vars.source_key]
+description = "Stable source-adapter key used in durable journey identity"
+required = true
+
+[vars.source_url]
+description = "Canonical source URL for provenance and optional status projection"
 required = true
 
 [vars.default_branch]
-description = "Repository default branch at the explicit root snapshot"
+description = "Repository default branch at the journey snapshot"
 required = true
 
 [vars.default_branch_sha]
@@ -74,7 +79,7 @@ description = "Maximum recorded non-blocking debt issues"
 required = true
 
 [vars.max_elapsed_seconds]
-description = "Maximum elapsed seconds for this root"
+description = "Maximum elapsed seconds for this journey"
 required = true
 
 [vars.max_non_progress]
@@ -82,35 +87,36 @@ description = "Maximum reconciliations with a pending action and no progress"
 required = true
 
 [[steps]]
-id = "load-explicit-root"
-title = "Load the explicit root"
+id = "load-or-create-journey"
+title = "Load or create the documentation journey"
 description = """
-Create or resume only the explicit root identified by the supplied repository,
-root issue, and default-branch SHA through `scripts/github_docs_bootstrap.py`.
+Create or resume the source-bound journey identified by the supplied repository,
+normalized source, and default-branch SHA through `scripts/github_docs_journey.py`.
 Build the required `techdocs` journey with role, job, starting_context,
 success_condition, and backfill_policy exactly as supplied. Set every supplied
 budget explicitly; do not substitute defaults.
 
-Reject a missing journey field, non-explicit source, or snapshot that is not
-the supplied immutable default-branch SHA. Pass supplied journey values to the
-durable controller, which owns `techdocs` domain and backfill-policy validation.
-Do not discover work from repository events. This formula has no trigger path
-from ordinary documentation-impact review.
+Reject a missing journey field, malformed source envelope, or snapshot that is
+not the supplied immutable default-branch SHA. Pass supplied journey values to
+the durable controller, which owns `techdocs` domain and backfill-policy
+validation. A source may continue only its existing journey; an unqualified
+docs-impact result cannot expand another journey. This lifecycle does not
+privilege any source kind.
 """
 
 [[steps]]
 id = "snapshot-and-admit"
 title = "Snapshot and mechanically admit one blocking decision"
-needs = ["load-explicit-root"]
+needs = ["load-or-create-journey"]
 description = """
-Use the durable bootstrap controller to bind a TechDocs decision to the exact
-repository identity, root identity, qualified decision provenance, and
+Use the durable journey controller to bind a TechDocs decision to the exact
+repository identity, journey identity, qualified decision provenance, and
 snapshot SHA. Admit at most one matching blocking decision into one child
 record. Never infer reader-journey content: TechDocs decides documentation
 content; this formula only enforces the controller's provenance, budgets, and
 journey boundary.
 
-A non-blocking decision is debt-only according to the explicit backfill policy
+A non-blocking decision is debt-only according to the declared backfill policy
 and must not invoke the worker.
 """
 
@@ -119,8 +125,8 @@ id = "project"
 title = "Project durable admitted-child intents"
 needs = ["snapshot-and-admit"]
 description = """
-Persist before projecting. Use `scripts/github_intake_docs_bootstrap_commands.py
-project --once --identity <bootstrap-identity>` to project only the persisted
+Persist before projecting. Use `scripts/github_intake_docs_journey_commands.py
+project --once --identity <journey-identity>` to project only the persisted
 intents through the configured GitHub App and City adapters. Do not create
 resources directly from an unpersisted decision.
 """
@@ -130,9 +136,9 @@ id = "run-admitted-child"
 title = "Run the admitted child worker"
 needs = ["project"]
 description = """
-Dispatch `docs-bootstrap` with one admitted child record only after its
+Dispatch `docs-journey` with one admitted child record only after its
 App-owned issue and assigned Bead have been durably projected. The worker's
-input is the admitted child record, not the root request, event payload, or a
+input is the admitted child record, not the source request, event payload, or a
 new documentation-impact decision. It returns an IDD-compliant child update
 and may create at most one App-owned documentation pull request.
 
@@ -144,10 +150,10 @@ documentation content.
 
 [[steps]]
 id = "reconcile"
-title = "Reconcile durable root state"
+title = "Reconcile durable journey state"
 needs = ["run-admitted-child"]
 description = """
-Persist the child update, then reconcile the same explicit root through the
+Persist the child update, then reconcile the same source-bound journey through the
 durable controller. Re-project only persisted pending actions. Do not schedule
 new worker work for recorded non-blocking debt. Stop when the controller
 returns a terminal state or the current admitted child remains incomplete.
@@ -158,7 +164,7 @@ id = "terminal-status"
 title = "Project terminal status"
 needs = ["reconcile"]
 description = """
-When the root reaches `baseline-complete`, `owner-review-required`,
+When the journey reaches `baseline-complete`, `owner-review-required`,
 `blocked-on-product-decision`, `budget-exhausted`, or `cancelled`, project its
 one durable terminal-status intent through the GitHub App. Do not merge any
 documentation pull request; merge authority remains outside this formula.

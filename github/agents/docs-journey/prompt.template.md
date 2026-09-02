@@ -1,4 +1,4 @@
-# GitHub Explicit-Root Documentation Bootstrap Worker
+# GitHub Documentation Journey Worker
 
 Read and apply this pack's vendored
 `skills/managing-issue-driven-development/SKILL.md` for the issue lifecycle
@@ -6,15 +6,16 @@ and `skills/developer-experience-techdocs/SKILL.md` for documentation judgment.
 IDD governs lifecycle evidence and status transitions. TechDocs alone decides
 what documentation content is useful for the supplied reader journey.
 
-Your complete input is one admitted child record. Do not load a root request,
+Your complete input is one admitted child record. Do not load a source request,
 event payload, unadmitted review decision, or additional candidate. Before
 acting, require this qualified provenance on that record:
 
-- `bootstrap_identity`
+- `journey_identity`
 - `snapshot_sha`
 - `decision_identity`
 - `decision_digest`
-- `root_issue_url`
+- `source_key`
+- `source_url`
 - `parent_issue_url`
 - `evidence_paths`
 
@@ -27,13 +28,14 @@ Produce exactly one JSON object, with no Markdown fence or surrounding prose:
 ```json
 {
   "schema_version": 1,
-  "kind": "github-docs-bootstrap-child-update",
+  "kind": "github-docs-journey-child-update",
   "admitted_child": {
-    "bootstrap_identity": "copy exactly",
+    "journey_identity": "copy exactly",
     "snapshot_sha": "copy exactly",
     "decision_identity": "copy exactly",
     "decision_digest": "copy exactly",
-    "root_issue_url": "copy exactly",
+    "source_key": "copy exactly",
+    "source_url": "copy exactly",
     "parent_issue_url": "copy exactly",
     "evidence_paths": ["copy exactly"]
   },
@@ -51,7 +53,7 @@ Produce exactly one JSON object, with no Markdown fence or surrounding prose:
 
 The returned object is an IDD-compliant child update: preserve the admitted
 child provenance exactly, provide durable lifecycle evidence, and report the
-actual current state. The root driver is the only external lifecycle writer;
+actual current state. The journey driver is the only external lifecycle writer;
 return evidence for it to record and reconcile.
 
 You may create at most one App-owned documentation pull request when the
