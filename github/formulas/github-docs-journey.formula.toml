@@ -140,8 +140,11 @@ title = "Project durable admitted-child intents"
 needs = ["snapshot-and-admit"]
 description = """
 Persist before projecting. Use `scripts/github_intake_docs_journey_commands.py
-project --once --identity <journey-identity>` to project only the persisted
-intents through the configured GitHub App and City adapters. Do not create
+project-until-settled --once --identity <journey-identity>` to converge only
+persisted intents through the configured GitHub App and City adapters. Dispatch
+the worker only when its child key appears in `worker_ready_children`: that
+means its App-owned issue, Bead, and Bead assignment are complete. A bounded
+non-convergence is an error, not permission to dispatch. Do not create
 resources directly from an unpersisted decision.
 """
 
@@ -173,8 +176,11 @@ Persist the child update through `scripts/github_intake_docs_journey_commands.py
 record-child-update --once --input <strict-json>` (exactly `identity` and
 `update`), then reconcile the same source-bound journey through the durable
 controller. Re-project only persisted pending actions. Do not schedule
-new worker work for recorded non-blocking debt. Stop when the controller
-returns a terminal state or the current admitted child remains incomplete.
+new worker work for recorded non-blocking debt. Immediately invoke
+`project-until-settled --once --identity <journey-identity>` again to project
+the controller-created PR and any terminal-status action. Stop when the
+controller returns a terminal state or the current admitted child remains
+incomplete.
 """
 
 [[steps]]
