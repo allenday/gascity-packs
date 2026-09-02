@@ -28,7 +28,9 @@ reconciles them.
 
 ## Reader journey contract
 
-Each explicit root fixes `domain` to `techdocs` and declares:
+Each request begins traversal at the repository documentation root: a declared
+documentation index when present, otherwise `README.md`. Each request fixes
+`domain` to `techdocs` and declares:
 
 - `role` — one small, repository-defined role such as `developer`,
   `operator`, or `end-user`;
@@ -40,12 +42,14 @@ Each explicit root fixes `domain` to `techdocs` and declares:
 - `backfill_policy` — `blocking-only` or `record-debt`.
 
 The controller does not infer a persona, product promise, or user journey
-from code alone. A root is rejected when these values are absent. The role is
-not a marketing persona: it constrains the reader's job and expected context.
+from code alone. A request is rejected when these values are absent. The role
+is not a marketing persona: it constrains the reader's job and expected
+context.
 Future domains may define their own role libraries, but this controller does
 not accept sales or marketing roots.
 
-The reviewer evaluates a path from the root context toward the declared job.
+The reviewer evaluates a path from the documentation root and request context
+toward the declared job.
 A gap that blocks that path may be admitted as remediation. A related gap
 that does not block the path is documentation debt: under `record-debt`, the
 controller may create one provenance-linked, non-executing GitHub issue; it
@@ -54,7 +58,9 @@ that issue. Under `blocking-only`, it records no debt issue.
 
 ## Durable model
 
-Each root has an immutable logical identity:
+When traversal needs durable external work, the controller automatically
+creates an execution root. It is not a separate owner-created ceremony. Each
+execution root has an immutable logical identity:
 
 `github-docs-bootstrap:<repository_id>:<root_issue_number>:<default_branch_sha>`
 
@@ -72,9 +78,12 @@ admitted only if all are present and match the persisted root snapshot.
 
 ## Admission and expansion
 
-The only entrypoint is an explicit root request on a GitHub Issue, routed to a
-new `docs-bootstrap` formula. It snapshots the default branch before any
-analysis and records an initial root status comment.
+The entrypoint is any request carrying a complete journey contract. The
+controller snapshots the default branch and documentation root before any
+analysis. It creates an execution root and initial status comment only when
+the traversal needs durable external work. A root-bound pull request may
+re-enter and continue the same traversal; an unbound pull request may not
+create unrelated work.
 
 A result may create one active child only when it is a validated, exact
 `docs-change-required` decision for that snapshot, it blocks the declared
