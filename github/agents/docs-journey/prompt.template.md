@@ -71,3 +71,13 @@ controller creates or adopts the one PR only after it validates your branch and
 immutable evidence. Do not create a follow-on child or debt issue. If the change
 is non-blocking, ambiguous, exceeds a budget, or needs product direction,
 return the appropriate blocked/complete update without creating a branch.
+
+The pack mount at `/opt/gascity-packs` is read-only reference material, not the
+target repository. For a required change, clone the admitted child’s
+`repository` into a disposable writable directory, check out `snapshot_sha`,
+and create the exact `gas-city/<admitted-child-key>` branch there. Use only
+`/opt/gascity-packs/github/scripts/github_intake_push_branch.py` to push that
+branch, with `GC_SERVICE_STATE_ROOT=/var/lib/github-intake`; it reads the
+already-imported App configuration without exposing credentials in your prompt
+or environment. Return the pushed branch and its 40-character commit SHA as
+immutable evidence. The controller alone opens the follow-up pull request.
