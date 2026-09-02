@@ -495,6 +495,19 @@ def _reconcile_terminal(root: dict[str, Any], now: float) -> str | None:
     return None
 
 
+def _forced_terminal(root: dict[str, Any], now: float) -> str | None:
+    """Return terminal states that safely preempt already-staged work."""
+    if root.get("cancelled") is True:
+        return "cancelled"
+    if root.get("owner_review_required") is True or root.get("snapshot_current") is False:
+        return "owner-review-required"
+    if root.get("product_decision_required") is True:
+        return "blocked-on-product-decision"
+    if now - root["created_at"] >= root["budgets"]["max_elapsed_seconds"]:
+        return "budget-exhausted"
+    return None
+
+
 def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | None:
     """Validate the established TechDocs artifact before deriving controller data."""
     if not isinstance(decision, dict):
@@ -842,7 +855,10 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
                 except Exception:
                     return store.save(root)
             return store.save(root)
-        terminal_state = _reconcile_terminal(root, now)
+        # An admitted child may legitimately consume the final child/PR
+        # budget. Its persisted lifecycle intent must still settle before
+        # capacity exhaustion is reconciled.
+        terminal_state = _forced_terminal(root, now) if _pending(root) else _reconcile_terminal(root, now)
         if terminal_state is not None:
             terminal_root, status_action = _terminal(_copy_root(root), terminal_state)
             # The terminal transition itself is durable before its status may

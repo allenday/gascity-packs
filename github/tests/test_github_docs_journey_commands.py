@@ -4,11 +4,12 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-from github_intake_docs_journey_commands import _strict_json_object, record_update, start_or_admit
+from github_intake_docs_journey_commands import _strict_json_object, project_until_settled, record_update, start_or_admit
 
 
 SHA = "a" * 40
@@ -72,6 +73,75 @@ def decision() -> dict[str, object]:
 
 
 class DocsJourneyCommandTests(unittest.TestCase):
+    def test_project_until_settled_rejects_nonconvergent_pending_actions_at_its_bound(self) -> None:
+        pending = {"state": "active", "actions": [{"id": "pending", "state": "pending"}], "children": []}
+        with mock.patch("github_intake_docs_journey_commands.project_configured_journey", return_value=pending) as project:
+            with self.assertRaisesRegex(RuntimeError, "did not settle within 2 passes"):
+                project_until_settled("/state", "journey", max_passes=2)
+
+        self.assertEqual(project.call_count, 2)
+
+    def test_project_until_settled_waits_for_issue_bead_and_assignment_before_worker_readiness(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def _resource(self, action: dict[str, object]) -> dict[str, str]:
+                self.calls.append(str(action["kind"]))
+                return {"id": str(action["kind"]), "logical_id": str(action["id"])}
+
+            def create_issue(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
+                return self._resource(action)
+
+            def create_bead(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
+                return self._resource(action)
+
+            def assign_bead(self, root: dict[str, object], action: dict[str, object], child: dict[str, object]) -> dict[str, str]:
+                return self._resource(action)
+
+            def create_debt_issue(self, root: dict[str, object], action: dict[str, object], debt: dict[str, object]) -> dict[str, str]:
+                return self._resource(action)
+
+            def create_docs_pr(self, root: dict[str, object], action: dict[str, object], child: dict[str, object] | None) -> dict[str, str]:
+                return self._resource(action)
+
+            def post_root_status(self, root: dict[str, object], action: dict[str, object]) -> dict[str, str]:
+                return self._resource(action)
+
+        with tempfile.TemporaryDirectory() as directory:
+            started = start_or_admit(directory, {"request": request(), "decision": decision()}, now=100)
+            adapter = Adapter()
+            with mock.patch("github_docs_journey.common.load_effective_config", return_value={"app": {"slug": "gas-city"}}), mock.patch(
+                "github_docs_journey.GitHubCityBootstrapAdapter", return_value=adapter,
+            ), mock.patch("github_docs_journey.time.time", return_value=101):
+                result = project_until_settled(directory, started["journey"]["identity"])
+
+            self.assertTrue(result["settled"])
+            self.assertEqual(result["passes"], 3)
+            self.assertEqual(adapter.calls, ["create_issue", "create_bead", "assign_bead"])
+            self.assertEqual(result["worker_ready_children"], [started["journey"]["children"][0]["key"]])
+
+            update = {
+                "schema_version": 1,
+                "kind": "github-docs-journey-child-update",
+                "admitted_child": result["journey"]["children"][0],
+                "state": "complete",
+                "documentation_branch": {
+                    "branch": "gas-city/docs-install",
+                    "commit_sha": SHA,
+                    "evidence": ["commit:abcdef"],
+                },
+            }
+            record_update(directory, {"identity": result["journey"]["identity"], "update": update})
+            with mock.patch("github_docs_journey.common.load_effective_config", return_value={"app": {"slug": "gas-city"}}), mock.patch(
+                "github_docs_journey.GitHubCityBootstrapAdapter", return_value=adapter,
+            ), mock.patch("github_docs_journey.time.time", return_value=101):
+                completed = project_until_settled(directory, result["journey"]["identity"])
+
+            self.assertTrue(completed["settled"])
+            self.assertEqual(completed["journey"]["state"], "baseline-complete")
+            self.assertEqual(adapter.calls, ["create_issue", "create_bead", "assign_bead", "create_docs_pr", "post_root_status"])
+
     def test_start_or_admit_persists_and_adopts_exact_request(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = {"request": request(), "decision": decision()}
