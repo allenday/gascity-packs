@@ -28,6 +28,7 @@ def journey_request(
         "starting_context": "a clone of the repository",
         "success_condition": "the package is installed successfully",
         "backfill_policy": backfill_policy,
+        "docs_impact_source_key": "github-pr:17:9:" + SHA,
         "budgets": {
             "max_depth": 2,
             "max_children": 1,
@@ -118,9 +119,13 @@ class DocsBootstrapSmokeTests(unittest.TestCase):
             "admitted_child": child,
             "state": "complete",
             "idd_update": {"phase": "ready_to_close", "change_set": "none", "revision": "none", "evidence": ["run:1"], "summary": "done"},
-            "documentation_branch": {"branch": "gas-city/docs-bootstrap", "evidence": ["commit:abcdef"]},
+            "documentation_branch": {
+                "branch": "gas-city/docs-bootstrap", "commit_sha": SHA, "evidence": ["commit:abcdef"],
+            },
         })
         self.assertEqual(pr_action["kind"], "create_docs_pr")
+        self.assertEqual(child["documentation_entry_point"], "docs/index.md")
+        self.assertEqual(pr_action["commit_sha"], SHA)
         root = project_actions(root, adapter)
         root, terminal_actions = reconcile_root(root, now=102)
 

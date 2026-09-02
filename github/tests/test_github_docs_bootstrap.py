@@ -21,6 +21,7 @@ from github_docs_bootstrap import (
     project_persisted_root,
     project_actions,
     reconcile_root,
+    record_child_update,
     select_documentation_root,
 )
 
@@ -44,6 +45,7 @@ def request(**overrides: object) -> dict[str, object]:
         "starting_context": "a clone of the repository",
         "success_condition": "the package is installed successfully",
         "backfill_policy": "blocking-only",
+        "docs_impact_source_key": "github-pr:17:42:" + SHA,
     }
     root.update(overrides)
     return root
@@ -138,6 +140,7 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(journey["identity"], f"github-docs-journey:17:github-issue:17:42:{SHA}")
         self.assertEqual(journey["documentation_root"], "README.md")
         self.assertEqual(journey["source"]["kind"], "github-issue")
+        self.assertEqual(journey["docs_impact_source_key"], "github-pr:17:42:" + SHA)
         self.assertNotIn("root_issue_number", journey)
 
     def test_journey_admits_work_without_a_bootstrap_root_and_preserves_v1_action_ids(self) -> None:
@@ -178,6 +181,59 @@ class DocsBootstrapTests(unittest.TestCase):
         continued, action = begin_journey(other_request, decision(), now=101, existing_journey=journey)
 
         self.assertIsNone(continued)
+        self.assertIsNone(action)
+
+    def test_journey_requires_an_explicit_docs_impact_source_binding(self) -> None:
+        request_value = {
+            **request(),
+            "source": {
+                "kind": "github-issue", "key": "github-issue:17:42",
+                "url": "https://github.com/allenday/demo/issues/42", "issue_number": 42,
+                "projection_capabilities": ["issue-comment"],
+            },
+        }
+        journey, action = begin_journey(request_value, decision(), now=100)
+        assert journey is not None and action is not None
+        self.assertEqual(journey["source"]["key"], "github-issue:17:42")
+        self.assertEqual(journey["docs_impact_source_key"], "github-pr:17:42:" + SHA)
+
+        unrelated, unrelated_action = begin_journey(
+            request_value,
+            decision(identity={
+                "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+                "head_sha": SHA, "source_key": "github-pr:17:9:" + SHA,
+            }),
+            now=101,
+            existing_journey=journey,
+        )
+        self.assertEqual(unrelated, journey)
+        self.assertIsNone(unrelated_action)
+
+    def test_worker_must_echo_the_admitted_documentation_entry_point(self) -> None:
+        request_value = {
+            **request(documentation_index="docs/index.md"),
+            "source": {
+                "kind": "github-issue", "key": "github-issue:17:42",
+                "url": "https://github.com/allenday/demo/issues/42", "issue_number": 42,
+                "projection_capabilities": ["issue-comment"],
+            },
+        }
+        journey, _ = begin_journey(request_value, decision(), now=100)
+        assert journey is not None
+        admitted_child = dict(journey["children"][0])
+        del admitted_child["documentation_entry_point"]
+
+        updated, action = record_child_update(journey, {
+            "schema_version": 1,
+            "kind": "github-docs-journey-child-update",
+            "admitted_child": admitted_child,
+            "state": "complete",
+            "documentation_branch": {
+                "branch": "gas-city/docs-index", "commit_sha": SHA, "evidence": ["commit:abcdef"],
+            },
+        })
+
+        self.assertEqual(updated, journey)
         self.assertIsNone(action)
 
     def test_journey_store_keeps_v1_records_readable_and_separates_v2_writes(self) -> None:

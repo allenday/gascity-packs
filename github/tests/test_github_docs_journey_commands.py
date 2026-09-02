@@ -34,6 +34,7 @@ def request(**overrides: object) -> dict[str, object]:
         "starting_context": "a clone of the repository",
         "success_condition": "the package is installed successfully",
         "backfill_policy": "blocking-only",
+        "docs_impact_source_key": "github-pr:17:9:" + SHA,
         "budgets": {
             "max_depth": 2,
             "max_children": 1,
@@ -104,6 +105,7 @@ class DocsJourneyCommandTests(unittest.TestCase):
                     "state": "complete",
                     "documentation_branch": {
                         "branch": "gas-city/docs-install",
+                        "commit_sha": SHA,
                         "evidence": ["commit:abcdef"],
                     },
                 },
@@ -112,6 +114,7 @@ class DocsJourneyCommandTests(unittest.TestCase):
             self.assertNotIn("Document installation", result["action"]["body"])
             self.assertIn("Admitted evidence surfaces", result["action"]["body"])
             self.assertEqual(result["action"]["worker_evidence"], ["commit:abcdef"])
+            self.assertEqual(result["action"]["commit_sha"], SHA)
             self.assertEqual(result["journey"]["children"][0]["state"], "complete")
             self.assertEqual(result["journey"]["docs_prs_used"], 1)
 

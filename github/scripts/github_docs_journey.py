@@ -106,6 +106,7 @@ def new_journey(request: dict[str, Any], now: float) -> dict[str, Any]:
     default_branch = _required_text(request, "default_branch")
     snapshot_sha = _sha(request.get("default_branch_sha"), "default_branch_sha")
     source = _source(request.get("source"))
+    docs_impact_source_key = _required_text(request, "docs_impact_source_key")
     journey = _journey(request)
     documentation_root = select_documentation_root(request)
     return {
@@ -115,6 +116,9 @@ def new_journey(request: dict[str, Any], now: float) -> dict[str, Any]:
         "repository": repository,
         "installation_id": installation_id,
         "source": source,
+        # A request source may intentionally bridge to a docs-impact review
+        # source, but the bridge is declared once in the durable contract.
+        "docs_impact_source_key": docs_impact_source_key,
         "default_branch": default_branch,
         "default_branch_sha": snapshot_sha,
         "documentation_root": documentation_root,
@@ -229,7 +233,7 @@ def journey_request_matches(existing_journey: dict[str, Any], request: dict[str,
         return False
     fields = (
         "identity", "repository_id", "repository", "installation_id", "source",
-        "default_branch", "default_branch_sha", "documentation_root", "journey", "budgets",
+        "docs_impact_source_key", "default_branch", "default_branch_sha", "documentation_root", "journey", "budgets",
     )
     return all(existing.get(field) == candidate.get(field) for field in fields)
 
@@ -283,6 +287,7 @@ def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> t
             "journey_identity": updated["identity"],
             "source_key": updated["source"]["key"],
             "source_url": updated["source"]["url"],
+            "documentation_entry_point": updated["documentation_root"],
             "parent_issue_url": updated["source"]["url"],
         })
     updated["children"].append(child)
@@ -331,7 +336,8 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     if any(action.get("id") == action_id for action in updated["actions"]):
         return updated, None
     action = _action(
-        action_id, "create_docs_pr", child_key=child["key"], branch=documentation_branch,
+        action_id, "create_docs_pr", child_key=child["key"],
+        branch=documentation_branch["branch"] if isinstance(documentation_branch, dict) else documentation_branch,
         # The worker can attest only to its App-owned branch and evidence.
         # The controller, not an untrusted child update, owns public PR intent.
         title=f"{_run_label(updated)} follow-up: {child['key'][:12]}",
@@ -340,12 +346,14 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
         worker_evidence=copy.deepcopy(update["documentation_branch"]["evidence"])
         if updated.get("schema_version") == 2 else [],
     )
+    if isinstance(documentation_branch, dict):
+        action["commit_sha"] = documentation_branch["commit_sha"]
     updated["actions"].append(action)
     updated["docs_prs_used"] += 1
     return updated, action
 
 
-def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -> tuple[bool, str | None]:
+def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -> tuple[bool, dict[str, Any] | str | None]:
     """Accept the bounded worker branch/evidence contract for v2 journeys.
 
     v1 records retain their historic ``documentation_pr`` payload so recovery
@@ -365,15 +373,19 @@ def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -
     branch_update = update.get("documentation_branch")
     if branch_update is None:
         return True, None
-    if not isinstance(branch_update, dict) or set(branch_update) != {"branch", "evidence"}:
+    if not isinstance(branch_update, dict) or set(branch_update) != {"branch", "commit_sha", "evidence"}:
         return False, None
     branch = branch_update.get("branch")
+    commit_sha = branch_update.get("commit_sha")
     evidence = branch_update.get("evidence")
     if not isinstance(branch, str) or not branch.startswith("gas-city/"):
         return False, None
     if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
         return False, None
-    return True, branch
+    try:
+        return True, {"branch": branch, "commit_sha": _sha(commit_sha, "documentation_branch.commit_sha"), "evidence": evidence}
+    except ValueError:
+        return False, None
 
 
 def _documentation_pr_body(root: dict[str, Any], child: dict[str, Any]) -> str:
@@ -392,7 +404,7 @@ def _same_child_provenance(child: dict[str, Any], admitted: dict[str, Any]) -> b
         "snapshot_sha", "decision_identity", "decision_digest", "parent_issue_url", "evidence_paths",
     )
     if "journey_identity" in child:
-        fields += ("journey_identity", "source_key", "source_url")
+        fields += ("journey_identity", "source_key", "source_url", "documentation_entry_point")
     else:
         fields += ("bootstrap_identity", "root_issue_url")
     return all(admitted.get(field) == child.get(field) for field in fields)
@@ -508,6 +520,8 @@ def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | Non
             return None
         identity = review["identity"]
         if identity["repository_id"] != root["repository_id"] or identity["repository"] != root["repository"]:
+            return None
+        if root.get("schema_version") == 2 and identity["source_key"] != root.get("docs_impact_source_key"):
             return None
     except ValueError:
         return None
@@ -960,6 +974,7 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("root_issue_number must be a positive integer")
     else:
         result["source"] = _source(result.get("source"))
+        result["docs_impact_source_key"] = _required_text(result, "docs_impact_source_key")
     for key in ("children", "debts", "actions", "visited_surfaces"):
         if not isinstance(result.get(key), list):
             raise ValueError(f"root {key} must be a list")
