@@ -71,6 +71,8 @@ gc sling <rig>/docs-journey github-docs-journey --formula \
   --var source_kind=github-issue \
   --var source_key=github-issue:<github-node-id>:123 \
   --var source_url=https://github.com/owner/repo/issues/123 \
+  --var docs_impact_source_key=github-pr:<github-node-id>:456:<head-sha> \
+  --var documentation_index=docs/README.md \
   --var default_branch=main \
   --var default_branch_sha=<40-character-sha> \
   --var techdocs_role='<reader role>' \

@@ -34,6 +34,10 @@ required = true
 description = "Canonical source URL for provenance and optional status projection"
 required = true
 
+[vars.docs_impact_source_key]
+description = "Exact docs-impact artifact source key authorized as evidence for this journey"
+required = true
+
 [vars.documentation_index]
 description = "Optional repository-relative documentation entry point; README.md when omitted"
 required = false
@@ -110,7 +114,7 @@ privilege any source kind.
 Invoke `scripts/github_intake_docs_journey_commands.py start-or-admit --once
 --input <strict-json>` with exactly `request` and `decision`; the request
 contains this normalized source, optional documentation_index, and every
-declared journey/budget value. Persisted controller output is the only input
+declared journey/budget value, including docs_impact_source_key. Persisted controller output is the only input
 to subsequent steps.
 """
 
@@ -150,7 +154,9 @@ Dispatch `docs-journey` with one admitted child record only after its
 App-owned issue and assigned Bead have been durably projected. The worker's
 input is the admitted child record, not the source request, event payload, or a
 new documentation-impact decision. It returns an IDD-compliant child update
-and may create at most one App-owned documentation pull request.
+and may prepare at most one App-owned documentation branch with immutable
+commit evidence. The controller creates or adopts the one pull request only
+after it validates that returned branch evidence.
 
 The worker must read the vendored `managing-issue-driven-development` skill for
 lifecycle evidence and the vendored `developer-experience-techdocs` skill for

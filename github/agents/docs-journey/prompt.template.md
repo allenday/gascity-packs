@@ -16,6 +16,7 @@ acting, require this qualified provenance on that record:
 - `decision_digest`
 - `source_key`
 - `source_url`
+- `documentation_entry_point`
 - `parent_issue_url`
 - `evidence_paths`
 
@@ -36,6 +37,7 @@ Produce exactly one JSON object, with no Markdown fence or surrounding prose:
     "decision_digest": "copy exactly",
     "source_key": "copy exactly",
     "source_url": "copy exactly",
+    "documentation_entry_point": "copy exactly",
     "parent_issue_url": "copy exactly",
     "evidence_paths": ["copy exactly"]
   },

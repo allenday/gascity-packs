@@ -66,6 +66,7 @@ class DocsJourneyFormulaTests(unittest.TestCase):
             "source_kind",
             "source_key",
             "source_url",
+            "docs_impact_source_key",
             "default_branch_sha",
             "techdocs_role",
             "techdocs_job",
@@ -132,6 +133,7 @@ class DocsJourneyFormulaTests(unittest.TestCase):
             "decision_digest",
             "source_key",
             "source_url",
+            "documentation_entry_point",
             "parent_issue_url",
             "evidence_paths",
         ):

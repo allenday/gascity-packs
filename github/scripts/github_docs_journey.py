@@ -18,6 +18,7 @@ import pathlib
 import posixpath
 import tempfile
 import time
+import urllib.parse
 from typing import Any
 
 import github_intake_common as common
@@ -736,6 +737,15 @@ class GitHubCityBootstrapAdapter:
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
+        if root.get("schema_version") == 2:
+            commit_sha = _sha(action.get("commit_sha"), "documentation branch commit_sha")
+            ref = common.github_api_request(
+                "GET",
+                f"/repos/{owner}/{repo}/git/ref/heads/{urllib.parse.quote(branch, safe='')}",
+                bearer_token=token,
+            )
+            if str((ref.get("object") or {}).get("sha") or "").lower() != commit_sha:
+                raise ValueError("documentation branch does not match the admitted immutable commit")
         title = str(action.get("title") or f"{_run_label(root)} follow-up")
         base = str(action.get("base") or root["default_branch"])
         body = str(action.get("body") or f"App-owned {_run_label(root).lower()} follow-up.")
