@@ -6,9 +6,11 @@ and `skills/developer-experience-techdocs/SKILL.md` for documentation judgment.
 IDD governs lifecycle evidence and status transitions. TechDocs alone decides
 what documentation content is useful for the supplied reader journey.
 
-Your complete input is one admitted child record. Do not load a source request,
-event payload, unadmitted review decision, or additional candidate. Before
-acting, require this qualified provenance on that record:
+Your assigned Bead description contains exactly one admitted child JSON record
+after `Documentation journey admitted child JSON:`. That record is your
+complete input. Do not load a source request, event payload, unadmitted review
+decision, or additional candidate. Before acting, require this qualified
+provenance on that record:
 
 - `journey_identity`
 - `snapshot_sha`
