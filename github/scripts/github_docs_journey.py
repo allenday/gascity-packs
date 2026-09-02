@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import json
 import os
+import os
 import pathlib
 import posixpath
 import tempfile
@@ -678,6 +679,10 @@ class GitHubCityBootstrapAdapter:
     def __init__(self, app_config: dict[str, Any], city_root: str = "") -> None:
         self.app_config = copy.deepcopy(app_config)
         self.city_root = city_root or common.city_root() or "."
+        # The docs-review runtime projects Beads directly.  Its configured rig
+        # worktree is therefore the store boundary for both creation and
+        # assignment; using the City root would create an unroutable bead.
+        self.bead_workdir = os.environ.get("GC_CITY_DOCS_REVIEW_RIG_DIR", "").strip() or self.city_root
         self.app_login = common.app_bot_login(self.app_config)
         if not self.app_login:
             raise ValueError("GitHub bootstrap projection requires a configured GitHub App slug")
@@ -716,7 +721,7 @@ class GitHubCityBootstrapAdapter:
                 else "docs-journey.assignment_action_id": action["id"],
             }, sort_keys=True),
         )
-        result = service.run_subprocess(command, self.city_root)
+        result = service.run_subprocess(command, self.bead_workdir)
         if result.returncode != 0:
             raise RuntimeError(f"gc bd update failed: {service.trim_output(result.stderr or result.stdout)}")
         return {"id": bead_id, "logical_id": str(action["id"])}
@@ -775,7 +780,7 @@ class GitHubCityBootstrapAdapter:
                 self.city_root, "list", "--json", "--all", "--metadata-field",
                 f"external.source_key={action['id']}", "--limit", "0",
             ),
-            self.city_root,
+            self.bead_workdir,
         )
         if lookup.returncode != 0:
             raise RuntimeError(f"gc bd list failed: {service.trim_output(lookup.stderr or lookup.stdout)}")
@@ -792,7 +797,7 @@ class GitHubCityBootstrapAdapter:
             "--external-ref", str(action["id"]),
             "--metadata", json.dumps({"external.source_key": str(action["id"])}, sort_keys=True),
         )
-        result = service.run_subprocess(command, self.city_root)
+        result = service.run_subprocess(command, self.bead_workdir)
         if result.returncode != 0:
             raise RuntimeError(f"gc bd create failed: {service.trim_output(result.stderr or result.stdout)}")
         payload = service.extract_json_value(result.stdout)
