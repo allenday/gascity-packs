@@ -1,16 +1,17 @@
-# Bounded Documentation Bootstrap Design
+# Bounded Documentation Journey Design
 
 ## Outcome
 
-An owner can explicitly start a documentation-baseline run for one GitHub
-repository. The run establishes a trustworthy documentation path for one
-declared reader role and job, uses the existing TechDocs/docs-impact decision
-as its only documentation-analysis unit, projects selected bounded gaps into
-linked GitHub issues and City beads, and stops with a durable,
-human-readable root state.
+Every documentation request enters one documentation journey for one GitHub
+repository. The journey traverses from the repository documentation entry
+point toward one declared reader role and job, uses the existing
+TechDocs/docs-impact decision as its only documentation-analysis unit,
+projects selected bounded gaps into linked GitHub issues and City beads, and
+stops with a durable, human-readable terminal state.
 
-This is additive to PR review. A normal `Gas City / docs-impact` pull-request
-check never starts or expands bootstrap work.
+This is additive to PR review. A pull request, issue, or explicit operator
+request is a source adapter: each supplies provenance and the same normalized
+journey contract. Source adapters do not decide documentation content.
 
 ## Authority and boundaries
 
@@ -22,13 +23,13 @@ branch and never merges.
 
 The TechDocs skill decides whether a concrete evidence surface needs docs. IDD
 provides planning, issue lifecycle, critique, CI, acceptance, and closure
-discipline. The bootstrap controller only carries provenance, evaluates
+discipline. The journey controller only carries provenance, evaluates
 mechanical admission rules, persists actions before side effects, and
 reconciles them.
 
 ## Reader journey contract
 
-Each request begins traversal at the repository documentation root: a declared
+Each request begins traversal at the repository documentation entry point: a declared
 documentation index when present, otherwise `README.md`. Each request fixes
 `domain` to `techdocs` and declares:
 
@@ -46,9 +47,9 @@ from code alone. A request is rejected when these values are absent. The role
 is not a marketing persona: it constrains the reader's job and expected
 context.
 Future domains may define their own role libraries, but this controller does
-not accept sales or marketing roots.
+not accept sales or marketing requests.
 
-The reviewer evaluates a path from the documentation root and request context
+The reviewer evaluates a path from the documentation entry point and request context
 toward the declared job.
 A gap that blocks that path may be admitted as remediation. A related gap
 that does not block the path is documentation debt: under `record-debt`, the
@@ -58,39 +59,45 @@ that issue. Under `blocking-only`, it records no debt issue.
 
 ## Durable model
 
-When traversal needs durable external work, the controller automatically
-creates an execution root. It is not a separate owner-created ceremony. Each
-execution root has an immutable logical identity:
+A **journey run** is the durable record for a normalized request at a pinned
+repository snapshot. The documentation entry point is navigation metadata,
+not an execution root or a special bootstrap mode. Every source adapter binds
+to the same journey-run model, with a source envelope containing kind, stable
+ID, URL, and projection capabilities. Each journey run has an immutable
+logical identity:
 
-`github-docs-bootstrap:<repository_id>:<root_issue_number>:<default_branch_sha>`
+`github-docs-journey:<repository_id>:<source_key>:<default_branch_sha>`
 
-The persisted root record includes repository and installation identity, root
-issue URL, reader journey contract, default branch ref/SHA, configured
-budgets, current counters, visited evidence-surface keys, terminal state, and
-child records. A child key is the SHA-256 digest of the root identity plus the
-canonical docs-impact decision identity and normalized evidence-surface paths.
-Replays therefore adopt existing records rather than create duplicate issues,
-beads, or PRs.
+The persisted record includes repository and installation identity, source
+envelope, reader journey contract, documentation entry point, default branch
+ref/SHA, configured budgets, current counters, visited evidence-surface keys,
+terminal state, and child records. A child key is the SHA-256 digest of the
+journey identity plus the canonical docs-impact decision identity and
+normalized evidence-surface paths. Replays therefore adopt existing records
+rather than create duplicate issues, beads, or PRs.
 
-Every child carries `root_issue_url`, `parent_issue_url`, `depth`,
-`bootstrap_identity`, `snapshot_sha`, and the decision digest. A child may be
-admitted only if all are present and match the persisted root snapshot.
+Every child carries its source provenance, optional generated parent-issue
+URL, `depth`, `journey_identity`, `snapshot_sha`, and the decision digest. A
+child may be admitted only if all required values match the persisted journey
+snapshot. Existing v1 bootstrap records and logical IDs remain readable until
+they are terminal; migration must not duplicate their external resources.
 
 ## Admission and expansion
 
 The entrypoint is any request carrying a complete journey contract. The
-controller snapshots the default branch and documentation root before any
-analysis. It creates an execution root and initial status comment only when
-the traversal needs durable external work. A root-bound pull request may
-re-enter and continue the same traversal; an unbound pull request may not
-create unrelated work.
+controller snapshots the default branch and documentation entry point before
+any analysis. It creates a journey run and initial source status only when
+the traversal needs durable external work. A source may continue only the
+journey it is bound to; a source without that binding may start its own
+declared journey, but it may not expand another journey or create unrelated
+work from an unqualified docs-impact decision.
 
 A result may create one active child only when it is a validated, exact
 `docs-change-required` decision for that snapshot, it blocks the declared
 reader journey, the evidence surface was not previously visited, all budgets
 remain available, and the decision has no product ambiguity. The controller
 creates the GitHub child issue and City bead idempotently, then assigns the
-docs-bootstrap worker. The worker follows vendored TechDocs and IDD, creates
+docs-journey worker. The worker follows vendored TechDocs and IDD, creates
 an App-owned documentation branch/PR, and reports its result to the child
 issue.
 
@@ -102,7 +109,7 @@ terminal/escalation state.
 
 ## Guardrails
 
-Defaults are deliberately small and must be explicit in the root record:
+Defaults are deliberately small and must be explicit in the journey record:
 
 - maximum depth: `2`;
 - maximum admitted children: `8`;
@@ -114,11 +121,11 @@ Defaults are deliberately small and must be explicit in the root record:
 Budget checks occur before persistence of a child or debt admission and again
 before external projection. A stale default branch snapshot terminalizes the
 root as `owner-review-required`; it never silently retargets to a new commit.
-The visited-surface set is append-only for the root snapshot.
+The visited-surface set is append-only for the journey snapshot.
 
 ## Terminal states
 
-The root may transition once to exactly one of:
+The journey run may transition once to exactly one of:
 
 - `baseline-complete` — all admitted children are terminal and no remaining
   unvisited selected gap is eligible;
@@ -129,17 +136,23 @@ The root may transition once to exactly one of:
 - `budget-exhausted` — an admission would exceed a configured limit;
 - `cancelled` — owner explicitly stops the root.
 
-Terminal projection posts one compact root comment, preserves the final
+provenance record, and performs no new child admission.
+Terminal projection posts one compact source status where that capability is
+available, preserves the final provenance record, and performs no new child
+admission.
 provenance record, and performs no new child admission.
 
 ## Recovery and verification
 
 All controller operations use persist-before-action action records with a
-stable action ID. Reconciliation scans non-terminal roots with a bounded
+stable action ID. Reconciliation scans non-terminal journey runs with a bounded
 cursor, re-emits incomplete idempotent actions, and never uses webhook
 delivery IDs as logical identity. Tests cover duplicate delivery, restart,
 stale snapshot, exhausted budget, visited surface, ambiguous decision,
 partial GitHub/City projection, and terminal no-expansion behavior.
 
-The acceptance smoke uses a repository fixture: explicit root → one bounded
-gap → one linked issue and bead → worker-owned docs PR → root terminal state.
+The acceptance smoke uses a repository fixture: normalized request →
+documentation entry point → one bounded blocking gap → one linked issue and
+bead → worker-owned docs PR → terminal journey state. A non-blocking gap may
+produce only an inactive debt bud; it cannot dispatch, branch, recurse, or
+gain descendants.
