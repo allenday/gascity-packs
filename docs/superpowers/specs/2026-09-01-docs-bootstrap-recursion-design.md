@@ -21,6 +21,16 @@ documentation PR only after the root admission and an exact, persisted
 docs-impact result authorize that operation. It never writes to an author's
 branch and never merges.
 
+The formula is executable through three locked controller commands: (1)
+`start-or-admit` validates a normalized request, loads the exact bound journey
+or creates it, admits one exact decision, and persists before projection; (2)
+`project` projects only persisted action IDs; and (3) `record-child-update`
+validates one worker result against an admitted child and persists the optional
+PR intent. The worker prepares at most one dedicated App-owned branch and
+returns its immutable revision; the controller alone creates or adopts the
+pull request by its durable action ID. Formula prose must name these commands;
+it is not an alternative execution engine.
+
 The TechDocs skill decides whether a concrete evidence surface needs docs. IDD
 provides planning, issue lifecycle, critique, CI, acceptance, and closure
 discipline. The journey controller only carries provenance, evaluates
@@ -81,6 +91,15 @@ URL, `depth`, `journey_identity`, `snapshot_sha`, and the decision digest. A
 child may be admitted only if all required values match the persisted journey
 snapshot. Existing v1 bootstrap records and logical IDs remain readable until
 they are terminal; migration must not duplicate their external resources.
+
+Source continuation requires exact equality of the canonical envelope and
+immutable journey request: repository and installation, default-branch SHA,
+documentation entry point, role/job/context/success/backfill contract, and
+budgets. A matching source key alone is not sufficient. A source status write
+requires the declared `issue-comment` capability; the adapter never infers
+capabilities from an issue URL or number. V2 Bead metadata uses only
+`docs-journey.*` keys; legacy `bootstrap.*` metadata is retained only while
+reconciling v1 records.
 
 ## Admission and expansion
 

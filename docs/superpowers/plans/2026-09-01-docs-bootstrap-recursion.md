@@ -58,6 +58,8 @@
 - [ ] Write failing compatibility tests proving a v1 persisted record resumes without a duplicate issue, bead, assignment, PR, or status comment.
 - [ ] Write failing source tests proving issue, PR, and explicit requests normalize to the same journey contract; only a source already bound to a journey may continue it.
 - [ ] Implement dual-read compatibility and source projection capabilities before removing public bootstrap names. Do not make a mass rename that strands live records.
+- [ ] Add locked `start-or-admit`, `project`, and `record-child-update` commands. The formula must invoke those commands; a worker prepares a dedicated App-owned branch and the controller creates/adopts the resulting PR intent.
+- [ ] Require exact canonical source/request equality for continuation, enforce named source projection capabilities, use `docs-journey.*` metadata for v2 resources, and expose an optional documentation-entry path.
 - [ ] Rename public formula, worker, commands, records, messages, and documentation to `docs-journey`; retain only deliberately tested legacy-read aliases.
 - [ ] Run the focused journey and full GitHub suite; inspect persisted action IDs and adoption markers.
 - [ ] Commit `refactor(github): unify docs bootstrap as journey lifecycle`.
