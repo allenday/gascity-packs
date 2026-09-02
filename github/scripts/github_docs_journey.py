@@ -683,7 +683,10 @@ class GitHubCityBootstrapAdapter:
             raise ValueError("assign_bead requires a completed create_bead resource")
         command = service.gc_bd_command(
             self.city_root, "update", bead_id, "--metadata",
-            json.dumps({"bootstrap.assignment_action_id": action["id"]}, sort_keys=True),
+            json.dumps({
+                "bootstrap.assignment_action_id" if root.get("schema_version") == 1
+                else "docs-journey.assignment_action_id": action["id"],
+            }, sort_keys=True),
         )
         result = service.run_subprocess(command, self.city_root)
         if result.returncode != 0:
@@ -772,6 +775,8 @@ def _source_issue_number(root: dict[str, Any]) -> int | None:
         return root.get("root_issue_number") if type(root.get("root_issue_number")) is int else None
     source = root.get("source")
     if not isinstance(source, dict) or source.get("kind") != "github-issue":
+        return None
+    if "issue-comment" not in source.get("projection_capabilities", []):
         return None
     value = source.get("issue_number")
     return value if type(value) is int and value > 0 else None

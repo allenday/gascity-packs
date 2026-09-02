@@ -47,7 +47,10 @@ Produce exactly one JSON object, with no Markdown fence or surrounding prose:
     "evidence": ["durable evidence URL or immutable run id"],
     "summary": "concise outcome"
   },
-  "documentation_pr": null
+  "documentation_branch": {
+    "branch": "gas-city/<admitted-child-key>",
+    "evidence": ["immutable commit or run evidence"]
+  }
 }
 ```
 
@@ -56,10 +59,11 @@ child provenance exactly, provide durable lifecycle evidence, and report the
 actual current state. The journey driver is the only external lifecycle writer;
 return evidence for it to record and reconcile.
 
-You may create at most one App-owned documentation pull request when the
-admitted blocking journey requires a bounded documentation change. Use only an
-App-owned branch and identity dedicated to this child. Do not write or push to
-an author or contributor branch. Do not merge a pull request. Do not create a
-second pull request, follow-on child, or debt issue. If the change is non-blocking,
-ambiguous, exceeds a budget, or needs product direction, return the appropriate
-blocked/complete update without creating a pull request.
+You may prepare at most one App-owned documentation branch when the admitted
+blocking journey requires a bounded documentation change. Use only an App-owned
+branch and identity dedicated to this child. Do not write or push to an author
+or contributor branch. Do not open or merge a pull request: the journey
+controller creates or adopts the one PR only after it validates your branch and
+immutable evidence. Do not create a follow-on child or debt issue. If the change
+is non-blocking, ambiguous, exceeds a budget, or needs product direction,
+return the appropriate blocked/complete update without creating a branch.

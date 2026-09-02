@@ -34,6 +34,10 @@ required = true
 description = "Canonical source URL for provenance and optional status projection"
 required = true
 
+[vars.documentation_index]
+description = "Optional repository-relative documentation entry point; README.md when omitted"
+required = false
+
 [vars.default_branch]
 description = "Repository default branch at the journey snapshot"
 required = true
@@ -102,6 +106,12 @@ the durable controller, which owns `techdocs` domain and backfill-policy
 validation. A source may continue only its existing journey; an unqualified
 docs-impact result cannot expand another journey. This lifecycle does not
 privilege any source kind.
+
+Invoke `scripts/github_intake_docs_journey_commands.py start-or-admit --once
+--input <strict-json>` with exactly `request` and `decision`; the request
+contains this normalized source, optional documentation_index, and every
+declared journey/budget value. Persisted controller output is the only input
+to subsequent steps.
 """
 
 [[steps]]
@@ -153,8 +163,10 @@ id = "reconcile"
 title = "Reconcile durable journey state"
 needs = ["run-admitted-child"]
 description = """
-Persist the child update, then reconcile the same source-bound journey through the
-durable controller. Re-project only persisted pending actions. Do not schedule
+Persist the child update through `scripts/github_intake_docs_journey_commands.py
+record-child-update --once --input <strict-json>` (exactly `identity` and
+`update`), then reconcile the same source-bound journey through the durable
+controller. Re-project only persisted pending actions. Do not schedule
 new worker work for recorded non-blocking debt. Stop when the controller
 returns a terminal state or the current admitted child remains incomplete.
 """

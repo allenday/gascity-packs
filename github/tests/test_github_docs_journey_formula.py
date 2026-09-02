@@ -45,16 +45,16 @@ class DocsJourneyFormulaTests(unittest.TestCase):
             normalized,
             r"\bdo not\b[^.]*\b(?:write|push)\b[^.]*\b(?:author|contributor)\b[^.]*\bbranch\b",
         )
-        self.assertRegex(normalized, r"\bdo not merge\b[^.]*\bpull request\b")
+        self.assertRegex(normalized, r"\bdo not open or merge\b[^.]*\bpull request\b")
         self.assertEqual(
-            re.findall(r"\b(?:may|can) create at most (\w+) app-owned documentation pull request\b", normalized),
+            re.findall(r"\b(?:may|can) prepare at most (\w+) app-owned documentation branch\b", normalized),
             ["one"],
         )
         self.assertNotRegex(
             normalized,
             r"\b(?:may|can|allowed to)\b[^.]*\b(?:write|push)\b[^.]*\b(?:author|contributor)\b[^.]*\bbranch\b",
         )
-        self.assertNotRegex(normalized, r"\b(?:may|can|allowed to)\b[^.]*\bmerge\b")
+        self.assertNotRegex(normalized, r"\b(?:may|can|allowed to)\b[^.]*\b(?:open|merge)\b[^.]*\bpull request\b")
 
     def test_formula_requires_a_normalized_source_with_complete_journey_and_budget_contract(self) -> None:
         formula = self._formula()
@@ -140,16 +140,15 @@ class DocsJourneyFormulaTests(unittest.TestCase):
         self.assertIn("one admitted child record", prompt.lower())
         self.assertIn("idd-compliant child update", prompt.lower())
 
-    def test_worker_authority_allows_only_one_app_owned_documentation_pr(self) -> None:
+    def test_worker_authority_allows_only_one_app_owned_documentation_branch(self) -> None:
         prompt = self._worker_prompt()
         self._assert_worker_operational_authority(prompt)
 
         cases = (
-            ("author branch write", lambda value: re.sub(r"Do not write or push to\s+an author or contributor branch\.", "You may write to an author branch.", value)),
-            ("contributor branch write", lambda value: re.sub(r"Do not write or push to\s+an author or contributor branch\.", "You may push to a contributor branch.", value)),
-            ("merge", lambda value: value.replace("Do not merge a pull request.", "You may merge a pull request.")),
-            ("second documentation PR", lambda value: value.replace("at most one App-owned documentation pull request", "at most two App-owned documentation pull requests")),
-            ("non-App PR owner", lambda value: value.replace("App-owned documentation pull request", "worker-owned documentation pull request")),
+            ("author branch write", lambda value: re.sub(r"Do not write or push to an author\s+or contributor branch\.", "You may write to an author branch.", value)),
+            ("contributor branch write", lambda value: re.sub(r"Do not write or push to an author\s+or contributor branch\.", "You may push to a contributor branch.", value)),
+            ("open PR", lambda value: value.replace("Do not open or merge a pull request: the journey", "You may open a pull request. The journey")),
+            ("second documentation branch", lambda value: value.replace("at most one App-owned documentation branch", "at most two App-owned documentation branches")),
         )
         for name, mutate in cases:
             with self.subTest(name=name):
