@@ -105,35 +105,6 @@ terminal status. A source may continue only its own persisted journey; an
 unbound or generic source cannot attach a decision to another journey, and a
 non-blocking debt remains an inactive leaf with no worker descendants.
 
-### Lifecycle and worker boundary
-
-The City presents this lifecycle as a status graph. A documentation gap is not
-itself a terminal GitHub result: it must first become a source-bound journey
-and, when blocking work is admitted, a projected child. The original check is
-allowed to pass only after that lifecycle settles.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Reviewing: pull-request revision
-    Reviewing --> Passed: no-impact or docs-sufficient
-    Reviewing --> JourneyPending: docs-change-required
-    JourneyPending --> ChildProjected: issue + rig Bead + assignment
-    ChildProjected --> WorkerRunning: City routes admitted child
-    WorkerRunning --> BranchReady: App branch + immutable commit evidence
-    WorkerRunning --> ActionRequired: blocked / budget / ambiguity
-    BranchReady --> StackedPROpen: controller validates and opens PR
-    StackedPROpen --> Reviewing: documentation revision is reviewed
-    Passed --> [*]
-    ActionRequired --> [*]
-```
-
-The worker participates only in `WorkerRunning`. It receives one admitted
-child record, validates its exact provenance, and may prepare one dedicated
-`gas-city/<child-key>` branch. It cannot expand the journey, open a pull
-request, merge, or turn a debt bud into work. The controller validates the
-returned branch evidence, creates the stacked PR, and publishes terminal
-status.
-
 ## Import It
 
 ```toml
