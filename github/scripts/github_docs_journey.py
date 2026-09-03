@@ -690,6 +690,8 @@ class GitHubCityBootstrapAdapter:
     def _bead_command(self, *args: str) -> list[str]:
         """Address the configured review rig even when direct-BD is enabled."""
         configured_rig = os.environ.get("GC_CITY_DOCS_REVIEW_RIG_DIR", "").strip()
+        if configured_rig and os.environ.get("GC_GITHUB_INTAKE_DIRECT_BD", "") == "1":
+            return ["bd", "-C", configured_rig, *args]
         if configured_rig:
             rig = os.path.basename(configured_rig.rstrip("/"))
             return [os.environ.get("GC_BIN", "gc"), "--city", self.city_root, "--rig", rig, "bd", *args]

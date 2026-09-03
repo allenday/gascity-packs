@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -404,6 +405,11 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(restarted["actions"][0]["state"], "completed")
         self.assertEqual(run.call_args.args[1], "/configured-city")
         self.assertNotIn("/ambient-city", run.call_args.args[0])
+
+    def test_direct_beads_mode_uses_the_configured_rig_worktree(self) -> None:
+        with mock.patch.dict(os.environ, {"GC_GITHUB_INTAKE_DIRECT_BD": "1", "GC_CITY_DOCS_REVIEW_RIG_DIR": "/configured-rig"}, clear=False):
+            command = GitHubCityBootstrapAdapter({"slug": "gas-city"}, city_root="/configured-city")._bead_command("list")
+        self.assertEqual(command, ["bd", "-C", "/configured-rig", "list"])
 
     @mock.patch("github_intake_service.run_subprocess")
     def test_bead_description_carries_the_exact_admitted_child_record(self, run: mock.Mock) -> None:
