@@ -346,6 +346,13 @@ gc github comment-issue owner/repo 42 \
   --installation-id 234 \
   --github-app-identity mayor \
   --body "hello from the addressed profile"
+gc github comment-issue owner/repo 42 \
+  --body "hello" \
+  --dry-run
 gc github push-branch owner/repo --installation-id 123 --branch fix-42
 gc github create-pr owner/repo --installation-id 123 --base main --head fix-42 --title "fix: widget"
 ```
+
+Use `--dry-run` to print the resolved repository, issue number, and comment
+body without loading GitHub App configuration or posting a comment. Use it to
+verify a `comment-issue` request before running the command without the flag.
