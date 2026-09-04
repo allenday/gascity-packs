@@ -147,7 +147,12 @@ gc github comment-issue owner/repo 42 --body "Started work on this issue" --dry-
 
 The command prints the resolved request as JSON. Use the same flag with
 `--body-file` or `--body-stdin` when the comment body comes from a file or
-pipeline.
+pipeline. To provide a JSON object with exactly one string `body` field, use
+`--body-json`:
+
+```sh
+gc github comment-issue owner/repo 42 --body-json '{"body":"Started work on this issue"}' --dry-run
+```
 
 ## Layout
 

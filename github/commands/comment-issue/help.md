@@ -14,4 +14,5 @@ Flags:
   --installation-id <id>          GitHub App installation id, unless identity resolves one
   --github-app-identity <identity>     GitHub App identity for the comment author; see docs/github-app-identity.md
   --body <text>                   inline markdown body
+  --body-json <json>              JSON object with exactly one string body field
   --body-file <path>              read markdown body from file
