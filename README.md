@@ -135,6 +135,20 @@ source = "../gascity-packs/bmad"
 
 Each pack documents its own prerequisites, import snippet, and usage.
 
+### Preview a GitHub issue comment
+
+If you use the GitHub intake pack, add `--dry-run` to
+`gc github comment-issue` to verify the repository, issue number, and comment
+body without loading GitHub App configuration or posting a comment:
+
+```sh
+gc github comment-issue owner/repo 42 --body "Started work on this issue" --dry-run
+```
+
+The command prints the resolved request as JSON. Use the same flag with
+`--body-file` or `--body-stdin` when the comment body comes from a file or
+pipeline.
+
 ## Layout
 
 Each top-level directory is either a pack or a group of related packs:

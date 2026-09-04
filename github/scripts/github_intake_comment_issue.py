@@ -46,6 +46,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Post an issue comment via the workspace GitHub App")
     parser.add_argument("repository", help="owner/repo")
     parser.add_argument("issue_number", help="GitHub issue number")
+    parser.add_argument("--dry-run", action="store_true", help="print the resolved comment request without posting it")
     parser.add_argument("--installation-id", default="", help="GitHub App installation id")
     parser.add_argument(
         "--github-app-identity",
@@ -57,6 +58,10 @@ def main() -> int:
     group.add_argument("--body-file", default="", help="path to a markdown file")
     group.add_argument("--body-stdin", action="store_true", help="read comment markdown from standard input")
     args = parser.parse_args()
+
+    if args.dry_run:
+        print(json.dumps({"body": read_body(args), "dry_run": True, "issue_number": args.issue_number, "repository": args.repository}, sort_keys=True))
+        return 0
 
     try:
         app_cfg = app_config(args.github_app_identity)
