@@ -222,7 +222,7 @@ class DocsJourneyCommandTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
-            def publish(self, admission: dict[str, object], review: dict[str, object]) -> dict[str, object]:
+            def publish(self, admission: dict[str, object], review: dict[str, object], **kwargs: object) -> dict[str, object]:
                 self.calls.append({"admission": admission, "review": review})
                 return {"branch": "gas-city/docs-9-0123456789ab", "commit_sha": SHA,
                         "evidence": ["commit:" + SHA]}
@@ -304,6 +304,31 @@ class DocsJourneyCommandTests(unittest.TestCase):
         review = {**decision()["artifact"], "verdict": "proposal-ready", "proposal": direct_patch_artifact()}
         with self.assertRaisesRegex(ValueError, "already exists"):
             publisher.publish({}, review)
+
+    def test_trusted_direct_publisher_adopts_only_its_exact_durable_pre_push_intent(self) -> None:
+        class Gateway:
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                return {
+                    "number": 9,
+                    "head": {"sha": SHA, "ref": "feature/install", "repo": {"id": 17, "full_name": "allenday/demo"}},
+                    "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 17, "full_name": "allenday/demo"}},
+                }
+
+            def branch_exists(self, repository: str, branch: str) -> bool:
+                return True
+
+            def branch_matches(self, repository: str, branch: str, marker: str, commit_sha: str = "") -> bool:
+                return commit_sha == SHA
+
+        publisher = direct_child.GitHubDirectPatchPublisher({}, "91")
+        publisher.gateway = Gateway()
+        review = {**decision()["artifact"], "verdict": "proposal-ready", "proposal": direct_patch_artifact()}
+        proposal = direct_child.docs_patch.validate_artifact(direct_patch_artifact())
+        intent = {"repository": "allenday/demo", "branch": "gas-city/docs-9-" + proposal["patch_sha256"][:12],
+                  "marker": "gas-city-docs-followup:" + proposal["artifact_sha256"], "commit_sha": SHA}
+        published = publisher.publish({}, review, published_intent=intent)
+
+        self.assertEqual(published["commit_sha"], SHA)
 
     def test_trusted_direct_publisher_rechecks_the_source_head_after_push(self) -> None:
         class Gateway:

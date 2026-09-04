@@ -10,7 +10,7 @@ import hashlib
 import json
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 import github_intake_common as common
 import github_intake_docs_impact as impact
@@ -41,7 +41,14 @@ class GitHubDirectPatchPublisher:
     def __init__(self, app_config: dict[str, Any], installation_id: str) -> None:
         self.gateway = impact.GitHubAppProjectionGateway(app_config, installation_id)
 
-    def publish(self, admission: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    def publish(
+        self,
+        admission: dict[str, Any],
+        review: dict[str, Any],
+        *,
+        persist_intent: Callable[[dict[str, Any]], None] | None = None,
+        published_intent: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         identity = review["identity"]
         run = {"assignment": {"identity": identity}}
         current = self.gateway.pull_request(run)
@@ -54,11 +61,20 @@ class GitHubDirectPatchPublisher:
         marker = f"gas-city-docs-followup:{proposal['artifact_sha256']}"
         branch, repository = plan["branch"], plan["repository"]
         if self.gateway.branch_exists(repository, branch):
-            # This boundary has no durable remote branch adoption record.  A
-            # marker on a predictable ref is not authority, so fail closed
-            # instead of treating an arbitrary pre-existing ref as ours.
-            raise ValueError("derived App branch already exists; refusing untrusted adoption")
-        commit_sha = self.gateway.create_branch(repository, branch, plan["head_sha"], review, marker, lambda _: None)
+            if (not isinstance(published_intent, dict)
+                    or set(published_intent) != {"repository", "branch", "marker", "commit_sha"}
+                    or published_intent.get("repository") != repository
+                    or published_intent.get("branch") != branch
+                    or published_intent.get("marker") != marker):
+                raise ValueError("derived App branch already exists; refusing untrusted adoption")
+            commit_sha = str(published_intent.get("commit_sha") or "").lower()
+        else:
+            def before_push(commit_sha: str) -> None:
+                intent = {"repository": repository, "branch": branch, "marker": marker, "commit_sha": commit_sha}
+                if persist_intent is None:
+                    raise ValueError("trusted documentation patch publisher requires durable pre-push intent")
+                persist_intent(intent)
+            commit_sha = self.gateway.create_branch(repository, branch, plan["head_sha"], review, marker, before_push)
         if not self.gateway.branch_matches(repository, branch, marker, commit_sha):
             raise ValueError("trusted App branch could not be verified after publication")
         if impact.followup_pr_plan(self.gateway.pull_request(run), review) is None:
@@ -267,7 +283,15 @@ def complete_direct_child(state_dir: str, payload: dict[str, Any], *, publisher:
                 if publisher is None or not callable(getattr(publisher, "publish", None)):
                     raise ValueError("complete direct child requires a trusted documentation patch publisher")
                 review = _publication_review(binding, update)
-                published = publisher.publish(admission, review)
+                def persist_intent(intent: dict[str, Any]) -> None:
+                    journey["direct_publication"] = copy.deepcopy(intent)
+                    store.save(journey)
+                published = publisher.publish(
+                    admission,
+                    review,
+                    persist_intent=persist_intent,
+                    published_intent=journey.get("direct_publication"),
+                )
                 if not isinstance(published, dict) or set(published) != {"branch", "commit_sha", "evidence"}:
                     raise ValueError("trusted documentation patch publisher returned an invalid branch result")
                 forwarded["documentation_branch"] = published
