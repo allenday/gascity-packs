@@ -145,9 +145,10 @@ body without loading GitHub App configuration or posting a comment:
 gc github comment-issue owner/repo 42 --body "Started work on this issue" --dry-run
 ```
 
-The command prints the resolved request as JSON. Use the same flag with
-`--body-file` or `--body-stdin` when the comment body comes from a file or
-pipeline.
+The command prints the resolved request as JSON. For structured automation,
+pass the comment body as a JSON object with `--body-json`, for example
+`--body-json '{"body":"Started work on this issue"}'`. Use `--body-file` or
+`--body-stdin` when the comment body comes from a file or pipeline.
 
 ## Layout
 
