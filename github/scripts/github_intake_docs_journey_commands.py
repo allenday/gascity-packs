@@ -132,7 +132,7 @@ def activate_bud(state_dir: str, payload: dict[str, Any], *, now: float | None =
         request = {
             "repository_id": old["context"]["repository_id"], "repository": old["context"]["repository"],
             "installation_id": old["context"]["installation_id"], "context": context,
-            "persona_goal_path": old["persona_goal_path"], "budgets": old["budgets"],
+            "persona_goal_path": old["persona_goal_path"], "execution_budgets": old["execution_budgets"],
         }
         fresh = new_journey(request, time.time() if now is None else now)
         with store.lock(fresh["identity"]):

@@ -141,7 +141,7 @@ Check Run and durable-store restart.
 After a validated `github-pr-docs-impact-review`, use the reusable recursion
 commands: `start-or-admit`, `activate-bud`, `record-child-update`, and
 `project-until-settled`. New records normalize pull-request, issue, and
-operator contexts into `identity`, `context`, ordered `persona_goal_path`,
-`budgets`, `children`, `buds`, `actions`, and `state`. A bud is only an
+operator contexts into `identity`, `context`, ordered `coverage_cells`,
+`execution_budgets`, `children`, `buds`, `actions`, and `state`. A bud is only an
 evidence-backed, human-visible deferred item; it never starts child work until
 an explicit activation supplies a new context.

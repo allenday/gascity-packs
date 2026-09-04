@@ -57,10 +57,11 @@ gc github release-workflow owner/repo 42
 ## Documentation journeys
 
 Documentation recursion starts with an immutable `context` (a pull request,
-an issue, or an operator request) and an ordered `persona_goal_path`.
+an issue, or an operator request) and an ordered `coverage_cells` collection.
 Every new durable record uses the same fields: `identity`, `context`,
-`persona_goal_path`, `budgets`, `children`, `buds`, `actions`, and `state`.
-Adjacent evidence becomes an inert evidence-backed bud; only explicit
+`coverage_cells`, `execution_budgets`, `children`, `buds`, `actions`, and `state`.
+Every unresolved coverage cell becomes an inert evidence-backed bud unless it
+is selected for bounded active work; only explicit
 `activate-bud` with a new context creates a fresh recursion. A normalized source supplies provenance; an
 execution record is created automatically only when a blocking gap or a
 recorded debt requires durable external work. The command below supplies an

@@ -234,13 +234,14 @@ def _new_recursion(request: dict[str, Any], now: float) -> dict[str, Any]:
                         "repository_id": repository_id, "repository": repository,
                         "installation_id": installation_id})
     path = _persona_goal_path(request.get("persona_goal_paths", request.get("persona_goal_path")))
-    budgets = _recursion_budgets(request.get("budgets"))
+    budgets = _recursion_budgets(request.get("execution_budgets", request.get("budgets")))
     return {
         "schema_version": 3,
         "identity": f"github-docs-recursion:{repository_id}:{context['key']}:{context['default_branch_sha']}",
         "context": context,
         "persona_goal_path": path,
-        "budgets": budgets,
+        "execution_budgets": budgets,
+        "coverage_cells": [],
         "children": [],
         "buds": [],
         "actions": [],
@@ -248,7 +249,6 @@ def _new_recursion(request: dict[str, Any], now: float) -> dict[str, Any]:
         "created_at": now,
         "children_used": 0,
         "docs_prs_used": 0,
-        "buds_used": 0,
         "non_progress_count": 0,
         "visited_surfaces": [],
     }
@@ -267,7 +267,7 @@ def journey_request_matches(existing_journey: dict[str, Any], request: dict[str,
     except (KeyError, ValueError):
         return False
     if existing.get("schema_version") == 3:
-        fields = ("identity", "context", "persona_goal_path", "budgets")
+        fields = ("identity", "context", "persona_goal_path", "execution_budgets")
         return all(existing.get(field) == candidate.get(field) for field in fields)
     if existing.get("schema_version") != 2:
         return False
@@ -486,30 +486,52 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
     normalized = _exact_decision(root, decision)
     if normalized is None:
         return root, None
+    cells = decision.get("coverage_cells") if isinstance(decision, dict) else None
+    if cells is not None:
+        if not isinstance(cells, list) or not cells:
+            return root, None
+        actions: list[dict[str, Any]] = []
+        active_selected = False
+        for cell in cells:
+            if not isinstance(cell, dict) or set(cell) != {"identity", "classification", "evidence_paths"}:
+                return root, None
+            cell_id, classification, paths = cell["identity"], cell["classification"], cell["evidence_paths"]
+            if not isinstance(cell_id, str) or not cell_id or classification not in {"sufficient", "unmet", "human-required"}:
+                return root, None
+            if not isinstance(paths, list) or not paths or any(not isinstance(path, str) or not path for path in paths):
+                return root, None
+            root["coverage_cells"].append({"identity": cell_id, "classification": classification,
+                                           "evidence_paths": sorted(set(paths))})
+            if classification == "sufficient":
+                continue
+            candidate = copy.deepcopy(decision)
+            candidate.pop("coverage_cells", None)
+            candidate["journey_disposition"] = "blocking" if classification == "unmet" and not active_selected else "non-blocking"
+            cell_normalized = copy.deepcopy(normalized)
+            cell_normalized["identity"] = {**normalized["identity"], "coverage_cell": cell_id}
+            cell_normalized["paths"] = sorted(set(paths))
+            key = _child_key(root["identity"], cell_normalized["identity"], cell_normalized["paths"])
+            before = len(root["children"])
+            root, action = _admit_recursion_from_normalized(root, cell_normalized, now)
+            active_selected = active_selected or len(root["children"]) > before
+            if action is not None:
+                actions.append(action)
+        return root, actions[0] if actions else None
+    return _admit_recursion_from_normalized(root, normalized, now)
+
+
+def _admit_recursion_from_normalized(root: dict[str, Any], normalized: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
     terminal = _admission_terminal(root, normalized, now)
     if terminal is not None:
         return _terminal(root, terminal)
     key = _child_key(root["identity"], normalized["identity"], normalized["paths"])
     if normalized["journey_disposition"] == "non-blocking":
-        if any(bud.get("identity") == key for bud in root["buds"]):
-            return root, None
-        if root["buds_used"] >= root["budgets"]["max_buds"]:
-            return _terminal(root, "budget-exhausted")
-        bud = {"identity": key, "state": "recorded", "context": copy.deepcopy(root["context"]),
-               "persona_goal_path": copy.deepcopy(root["persona_goal_path"]),
-               "decision_identity": normalized["identity"], "decision_digest": normalized["digest"],
-               "evidence_paths": normalized["paths"]}
-        root["buds"].append(bud)
-        root["buds_used"] += 1
-        root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(normalized["paths"]))
-        action = _action(f"docs-recursion-bud:{key}:create_bud_issue", "create_bud_issue", bud_identity=key)
-        root["actions"].append(action)
-        return root, action
+        return _record_recursion_bud(root, normalized, key)
     if any(child.get("key") == key for child in root["children"]) or any(path in root["visited_surfaces"] for path in normalized["paths"]):
         return root, None
-    if (normalized["depth"] > root["budgets"]["max_depth"] or root["children_used"] >= root["budgets"]["max_children"]
-            or root["docs_prs_used"] >= root["budgets"]["max_docs_prs"]):
-        return _terminal(root, "budget-exhausted")
+    if (normalized["depth"] > root["execution_budgets"]["max_depth"] or root["children_used"] >= root["execution_budgets"]["max_children"]
+            or root["docs_prs_used"] >= root["execution_budgets"]["max_docs_prs"]):
+        return _record_recursion_bud(root, normalized, key)
     child = {"key": key, "identity": key, "state": "admitted", "depth": normalized["depth"],
              "snapshot_sha": root["context"]["default_branch_sha"], "decision_identity": normalized["identity"],
              "decision_digest": normalized["digest"], "evidence_paths": normalized["paths"],
@@ -518,6 +540,22 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
     root["children_used"] += 1
     root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(normalized["paths"]))
     action = _action(f"docs-recursion-child:{key}:create_issue", "create_issue", child_key=key)
+    root["actions"].append(action)
+    return root, action
+
+
+def _record_recursion_bud(root: dict[str, Any], normalized: dict[str, Any], key: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if any(bud.get("identity") == key for bud in root["buds"]):
+        return root, None
+    bud = {"identity": key, "state": "recorded", "context": copy.deepcopy(root["context"]),
+           "persona_goal_path": copy.deepcopy(root["persona_goal_path"]),
+           "decision_identity": normalized["identity"], "decision_digest": normalized["digest"],
+           "evidence_paths": normalized["paths"]}
+    root["buds"].append(bud)
+    root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(normalized["paths"]))
+    # Task 2 owns GitHub issue reconciliation.  Reuse the long-standing
+    # durable intent kind so existing configured adapters remain safe.
+    action = _action(f"docs-recursion-bud:{key}:create_debt_issue", "create_debt_issue", bud_identity=key)
     root["actions"].append(action)
     return root, action
 
@@ -534,7 +572,7 @@ def reconcile_root(root: dict[str, Any], now: float) -> tuple[dict[str, Any], li
     pending = _pending(updated)
     if pending:
         updated["non_progress_count"] += 1
-        if updated["non_progress_count"] >= updated["budgets"]["max_non_progress"]:
+        if updated["non_progress_count"] >= _execution_budgets(updated)["max_non_progress"]:
             updated, action = _terminal(updated, "budget-exhausted")
             return updated, [action]
         return updated, pending
@@ -549,7 +587,7 @@ def _admission_terminal(root: dict[str, Any], decision: dict[str, Any], now: flo
         return "owner-review-required"
     if root.get("product_decision_required") is True:
         return "blocked-on-product-decision"
-    if now - root["created_at"] >= root["budgets"]["max_elapsed_seconds"]:
+    if now - root["created_at"] >= _execution_budgets(root)["max_elapsed_seconds"]:
         return "budget-exhausted"
     if decision["product_ambiguity"]:
         return "blocked-on-product-decision"
@@ -565,12 +603,12 @@ def _reconcile_terminal(root: dict[str, Any], now: float) -> str | None:
         return "owner-review-required"
     if root.get("product_decision_required") is True:
         return "blocked-on-product-decision"
-    if now - root["created_at"] >= root["budgets"]["max_elapsed_seconds"]:
+    if now - root["created_at"] >= _execution_budgets(root)["max_elapsed_seconds"]:
         return "budget-exhausted"
     children = root["children"]
     if children and all(child.get("state") in _COMPLETE_CHILD_STATES for child in children):
         return "baseline-complete"
-    budgets = root["budgets"]
+    budgets = _execution_budgets(root)
     if (root["children_used"] >= budgets["max_children"] or root["docs_prs_used"] >= budgets["max_docs_prs"]
             or root["debt_issues_used"] >= budgets["max_debt_issues"]):
         return "budget-exhausted"
@@ -585,7 +623,7 @@ def _forced_terminal(root: dict[str, Any], now: float) -> str | None:
         return "owner-review-required"
     if root.get("product_decision_required") is True:
         return "blocked-on-product-decision"
-    if now - root["created_at"] >= root["budgets"]["max_elapsed_seconds"]:
+    if now - root["created_at"] >= _execution_budgets(root)["max_elapsed_seconds"]:
         return "budget-exhausted"
     return None
 
@@ -599,7 +637,7 @@ def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | Non
         product_ambiguity = False
         depth = 1
         if "artifact" in decision:
-            if set(decision) - {"artifact", "product_ambiguity", "depth", "journey_disposition"}:
+            if set(decision) - {"artifact", "product_ambiguity", "depth", "journey_disposition", "coverage_cells"}:
                 return None
             artifact = decision["artifact"]
             product_ambiguity = decision.get("product_ambiguity", False)
@@ -774,7 +812,7 @@ class GitHubCityBootstrapAdapter:
 
     def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
         owner, repo = _repository_parts(root)
-        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        token = common.create_installation_token(self.app_config, str(_installation_id(root)))
         existing = common.find_issue_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
@@ -813,7 +851,7 @@ class GitHubCityBootstrapAdapter:
             # projection target.  Recording the logical action as adopted is
             # still deterministic and does not invent a cross-source write.
             return {"id": str(action["id"]), "logical_id": str(action["id"])}
-        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        token = common.create_installation_token(self.app_config, str(_installation_id(root)))
         existing = common.find_issue_comment_by_logical_id_with_token(
             token, owner, repo, str(issue_number), str(action["id"]), self.app_login,
         )
@@ -834,7 +872,7 @@ class GitHubCityBootstrapAdapter:
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
-        if root.get("schema_version") == 2:
+        if root.get("schema_version") in {2, 3}:
             commit_sha = _sha(action.get("commit_sha"), "documentation branch commit_sha")
             ref = common.github_api_request(
                 "GET",
@@ -844,10 +882,10 @@ class GitHubCityBootstrapAdapter:
             if str((ref.get("object") or {}).get("sha") or "").lower() != commit_sha:
                 raise ValueError("documentation branch does not match the admitted immutable commit")
         title = str(action.get("title") or f"{_run_label(root)} follow-up")
-        base = str(action.get("base") or root["default_branch"])
+        base = str(action.get("base") or (root["context"]["default_branch"] if root.get("schema_version") == 3 else root["default_branch"]))
         body = str(action.get("body") or f"App-owned {_run_label(root).lower()} follow-up.")
         return common.create_pull_request(
-            self.app_config, str(root["installation_id"]), owner, repo, title, branch, base,
+            self.app_config, str(_installation_id(root)), owner, repo, title, branch, base,
             body + "\n\n" + common.github_logical_id_marker(str(action["id"])),
         )
 
@@ -883,11 +921,15 @@ class GitHubCityBootstrapAdapter:
 
 
 def _repository_parts(root: dict[str, Any]) -> tuple[str, str]:
-    repository = str(root.get("repository") or "")
+    repository = str(root.get("repository") or (root.get("context") or {}).get("repository") or "")
     owner, separator, repo = repository.partition("/")
     if not separator or not owner or not repo or "/" in repo:
         raise ValueError("bootstrap root repository must be owner/repository")
     return owner, repo
+
+
+def _installation_id(root: dict[str, Any]) -> str:
+    return str(root.get("installation_id") or (root.get("context") or {}).get("installation_id") or "")
 
 
 def _source_issue_number(root: dict[str, Any]) -> int | None:
@@ -1031,6 +1073,12 @@ def _action_child(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any
 
 
 def _action_debt(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+    if root.get("schema_version") == 3:
+        key = action.get("bud_identity")
+        bud = next((item for item in root["buds"] if item.get("identity") == key), None)
+        if bud is None:
+            raise ValueError(f"recursion action references missing bud: {key!r}")
+        return {"key": bud["identity"], "evidence_paths": bud["evidence_paths"]}
     key = action.get("debt_key")
     debt = next((item for item in root["debts"] if item.get("key") == key), None)
     if debt is None:
@@ -1088,11 +1136,11 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
     else:
         result["context"] = _context(result.get("context"))
         result["persona_goal_path"] = _persona_goal_path(result.get("persona_goal_path"))
-        result["budgets"] = _recursion_budgets(result.get("budgets"))
-        for key in ("children", "buds", "actions", "visited_surfaces"):
+        result["execution_budgets"] = _recursion_budgets(result.get("execution_budgets"))
+        for key in ("children", "buds", "coverage_cells", "actions", "visited_surfaces"):
             if not isinstance(result.get(key), list):
                 raise ValueError(f"root {key} must be a list")
-        for key in ("children_used", "docs_prs_used", "buds_used", "non_progress_count"):
+        for key in ("children_used", "docs_prs_used", "non_progress_count"):
             if type(result.get(key)) is not int or result[key] < 0:
                 raise ValueError(f"root {key} must be a non-negative integer")
         return result
@@ -1117,6 +1165,10 @@ def _repository(root: dict[str, Any]) -> str:
 
 def _snapshot_sha(root: dict[str, Any]) -> str:
     return root["context"]["default_branch_sha"] if root.get("schema_version") == 3 else root["default_branch_sha"]
+
+
+def _execution_budgets(root: dict[str, Any]) -> dict[str, int]:
+    return root["execution_budgets"] if root.get("schema_version") == 3 else root["budgets"]
 
 
 def _context(value: Any) -> dict[str, Any]:
@@ -1155,7 +1207,7 @@ def _persona_goal_path(value: Any) -> dict[str, list[dict[str, str]]]:
 def _recursion_budgets(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError("budgets must be an object")
-    fields = ("max_depth", "max_children", "max_docs_prs", "max_buds", "max_elapsed_seconds", "max_non_progress")
+    fields = ("max_depth", "max_children", "max_docs_prs", "max_elapsed_seconds", "max_non_progress")
     result: dict[str, int] = {}
     for key in fields:
         item = value.get(key)

@@ -143,14 +143,14 @@ class DocsBootstrapTests(unittest.TestCase):
                 "projection_capabilities": ["issue-comment"],
             },
             "persona_goal_path": path,
-            "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
-                        "max_buds": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                        "max_elapsed_seconds": 60, "max_non_progress": 1},
         }
         records = [new_journey({**common, "context": {**common["context"], "kind": kind}}, now=100)
                    for kind in ("github-pr", "github-issue", "operator-request")]
         for record in records:
             self.assertEqual(record["schema_version"], 3)
-            self.assertEqual(set(record), {"schema_version", "identity", "context", "persona_goal_path", "budgets", "children", "buds", "actions", "state", "created_at", "children_used", "docs_prs_used", "buds_used", "non_progress_count", "visited_surfaces"})
+            self.assertEqual(set(record), {"schema_version", "identity", "context", "persona_goal_path", "execution_budgets", "coverage_cells", "children", "buds", "actions", "state", "created_at", "children_used", "docs_prs_used", "non_progress_count", "visited_surfaces"})
             self.assertNotIn("source", record)
             self.assertNotIn("journey", record)
 
@@ -165,8 +165,8 @@ class DocsBootstrapTests(unittest.TestCase):
                     "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
                                           "starting_context": "clone", "success_condition": "installed",
                                           "documentation_entry_point": "README.md"},
-                    "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
-                                "max_buds": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+                    "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                        "max_elapsed_seconds": 60, "max_non_progress": 1},
                 }
                 record, action = begin_journey(candidate, decision(), now=100)
                 assert record is not None and action is not None
@@ -182,14 +182,37 @@ class DocsBootstrapTests(unittest.TestCase):
                         "default_branch": "main", "default_branch_sha": SHA},
             "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
                                   "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
-            "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
-                        "max_buds": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                        "max_elapsed_seconds": 60, "max_non_progress": 1},
         }
         record, action = begin_journey(candidate, decision(journey_disposition="non-blocking"), now=100)
         assert record is not None and action is not None
-        self.assertEqual(action["kind"], "create_bud_issue")
+        self.assertEqual(action["kind"], "create_debt_issue")
         self.assertEqual(record["children"], [])
         self.assertEqual(len(record["buds"]), 1)
+
+    def test_v3_classifies_all_coverage_cells_and_buds_every_unselected_unmet_cell(self) -> None:
+        request_value = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA, "url": "https://example.test/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install", "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        assessed = {**decision(), "coverage_cells": [
+            {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/install.md"]},
+            {"identity": "api", "classification": "unmet", "evidence_paths": ["docs/api.md"]},
+            {"identity": "security", "classification": "human-required", "evidence_paths": ["docs/security.md"]},
+            {"identity": "readme", "classification": "sufficient", "evidence_paths": ["README.md"]},
+        ]}
+        record, _ = begin_journey(request_value, assessed, now=100)
+        assert record is not None
+        self.assertEqual([cell["classification"] for cell in record["coverage_cells"]], ["unmet", "unmet", "human-required", "sufficient"])
+        self.assertEqual(len(record["children"]), 1)
+        self.assertEqual({bud["evidence_paths"][0] for bud in record["buds"]}, {"docs/api.md", "docs/security.md"})
+        self.assertNotIn("max_buds", record["execution_budgets"])
+        projected = project_actions(record, RecordingAdapter())
+        self.assertTrue(all(action["state"] == "completed" for action in projected["actions"] if action["kind"] == "create_debt_issue"))
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
         journey = new_journey({
             **request(),
