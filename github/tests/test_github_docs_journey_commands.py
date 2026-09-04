@@ -80,12 +80,12 @@ class DocsJourneyCommandTests(unittest.TestCase):
                         "docs_impact_source_key": "github-pr:17:9:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
             "persona_goal_paths": [{"domain": "techdocs", "role": "developer", "job": "install",
                                     "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"}],
-            "coverage_cells": ["default"],
+            "coverage_cells": ["default", "deferred"],
             "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_buds": 1,
                         "max_elapsed_seconds": 60, "max_non_progress": 1},
         }
         with tempfile.TemporaryDirectory() as directory:
-            assessment = {**decision(), "journey_disposition": "non-blocking", "coverage_cells": [{"identity": "default", "classification": "unmet", "evidence_paths": ["docs/install.md"]}]}
+            assessment = {**decision(), "coverage_cells": [{"identity": "default", "classification": "unmet", "evidence_paths": ["docs/install.md"]}, {"identity": "deferred", "classification": "unmet", "evidence_paths": ["docs/extra.md"]}]}
             started = start_or_admit(directory, {"request": v3_request, "decision": assessment}, now=100)
             old = started["journey"]
             bud = old["buds"][0]

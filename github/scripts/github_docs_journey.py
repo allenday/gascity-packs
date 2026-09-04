@@ -488,44 +488,49 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
     if normalized is None:
         return root, None
     cells = decision.get("coverage_cells") if isinstance(decision, dict) else None
-    if cells is not None:
-        if not isinstance(cells, list) or not cells:
-            return root, None
-        if {item.get("identity") for item in cells if isinstance(item, dict)} != {item["identity"] for item in root["coverage_cells"]} or len(cells) != len(root["coverage_cells"]):
-            return root, None
-        actions: list[dict[str, Any]] = []
-        active_selected = False
-        for cell in cells:
-            if not isinstance(cell, dict) or set(cell) != {"identity", "classification", "evidence_paths"}:
-                return root, None
-            cell_id, classification, paths = cell["identity"], cell["classification"], cell["evidence_paths"]
-            if not isinstance(cell_id, str) or not cell_id or classification not in {"sufficient", "unmet", "human-required"}:
-                return root, None
-            if not isinstance(paths, list) or not paths or any(not isinstance(path, str) or not path for path in paths):
-                return root, None
-            recorded_cell = {"identity": cell_id, "classification": classification,
-                             "evidence_paths": sorted(set(paths))}
-            prior = next((item for item in root["coverage_results"] if item.get("identity") == cell_id), None)
-            if prior is None:
-                root["coverage_results"].append(recorded_cell)
-            elif prior != recorded_cell:
-                return root, None
-            if classification == "sufficient":
-                continue
-            candidate = copy.deepcopy(decision)
-            candidate.pop("coverage_cells", None)
-            candidate["journey_disposition"] = "blocking" if classification == "unmet" and not active_selected else "non-blocking"
-            cell_normalized = copy.deepcopy(normalized)
-            cell_normalized["identity"] = {**normalized["identity"], "coverage_cell": cell_id}
-            cell_normalized["paths"] = sorted(set(paths))
-            key = _child_key(root["identity"], cell_normalized["identity"], cell_normalized["paths"])
-            before = len(root["children"])
-            root, action = _admit_recursion_from_normalized(root, cell_normalized, now)
-            active_selected = active_selected or len(root["children"]) > before
-            if action is not None:
-                actions.append(action)
-        return root, actions[0] if actions else None
-    return _admit_recursion_from_normalized(root, normalized, now)
+    normalized_cells = _normalize_coverage_assessment(root, cells)
+    if normalized_cells is None:
+        return root, None
+    # All results are validated before any durable state is changed.
+    updated = copy.deepcopy(root)
+    updated["coverage_results"] = normalized_cells
+    if any(cell["classification"] == "human-required" for cell in normalized_cells):
+        return _terminal(updated, "owner-review-required")
+    actions: list[dict[str, Any]] = []
+    active_selected = False
+    for cell in normalized_cells:
+        if cell["classification"] != "unmet":
+            continue
+        cell_normalized = copy.deepcopy(normalized)
+        cell_normalized["identity"] = {**normalized["identity"], "coverage_cell": cell["identity"]}
+        cell_normalized["paths"] = cell["evidence_paths"]
+        cell_normalized["journey_disposition"] = "blocking" if not active_selected else "non-blocking"
+        before = len(updated["children"])
+        updated, action = _admit_recursion_from_normalized(updated, cell_normalized, now)
+        active_selected = active_selected or len(updated["children"]) > before
+        if action is not None:
+            actions.append(action)
+    return updated, actions[0] if actions else None
+
+
+def _normalize_coverage_assessment(root: dict[str, Any], cells: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(cells, list) or len(cells) != len(root["coverage_cells"]):
+        return None
+    declared = [item["identity"] for item in root["coverage_cells"]]
+    results: list[dict[str, Any]] = []
+    for cell in cells:
+        if not isinstance(cell, dict) or set(cell) != {"identity", "classification", "evidence_paths"}:
+            return None
+        identity, classification, paths = cell["identity"], cell["classification"], cell["evidence_paths"]
+        if not isinstance(identity, str) or classification not in {"sufficient", "unmet", "human-required"}:
+            return None
+        if not isinstance(paths, list) or not paths or any(not isinstance(path, str) or not path for path in paths):
+            return None
+        results.append({"identity": identity, "classification": classification, "evidence_paths": sorted(set(paths))})
+    if [item["identity"] for item in results] != declared:
+        return None
+    existing = root["coverage_results"]
+    return results if not existing or existing == results else None
 
 
 def _admit_recursion_from_normalized(root: dict[str, Any], normalized: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:

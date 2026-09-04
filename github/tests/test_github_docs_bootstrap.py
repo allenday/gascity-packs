@@ -190,9 +190,9 @@ class DocsBootstrapTests(unittest.TestCase):
         }
         record, action = begin_journey(candidate, {**decision(journey_disposition="non-blocking"), "coverage_cells": [{"identity": "default", "classification": "unmet", "evidence_paths": ["docs/guide.md"]}]}, now=100)
         assert record is not None and action is not None
-        self.assertEqual(action["kind"], "create_debt_issue")
-        self.assertEqual(record["children"], [])
-        self.assertEqual(len(record["buds"]), 1)
+        self.assertEqual(action["kind"], "create_issue")
+        self.assertEqual(len(record["children"]), 1)
+        self.assertEqual(record["buds"], [])
 
     def test_v3_classifies_all_coverage_cells_and_buds_every_unselected_unmet_cell(self) -> None:
         request_value = {
@@ -200,23 +200,47 @@ class DocsBootstrapTests(unittest.TestCase):
             "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA, "url": "https://example.test/pull/42",
                         "docs_impact_source_key": "github-pr:17:42:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
             "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install", "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
-            "coverage_cells": ["install", "api", "security", "readme"],
+            "coverage_cells": ["install", "api", "readme"],
             "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
         }
         assessed = {**decision(), "coverage_cells": [
             {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/install.md"]},
             {"identity": "api", "classification": "unmet", "evidence_paths": ["docs/api.md"]},
-            {"identity": "security", "classification": "human-required", "evidence_paths": ["docs/security.md"]},
             {"identity": "readme", "classification": "sufficient", "evidence_paths": ["README.md"]},
         ]}
         record, _ = begin_journey(request_value, assessed, now=100)
         assert record is not None
-        self.assertEqual([cell["classification"] for cell in record["coverage_results"]], ["unmet", "unmet", "human-required", "sufficient"])
+        self.assertEqual([cell["classification"] for cell in record["coverage_results"]], ["unmet", "unmet", "sufficient"])
         self.assertEqual(len(record["children"]), 1)
-        self.assertEqual({bud["evidence_paths"][0] for bud in record["buds"]}, {"docs/api.md", "docs/security.md"})
+        self.assertEqual({bud["evidence_paths"][0] for bud in record["buds"]}, {"docs/api.md"})
         self.assertNotIn("max_buds", record["execution_budgets"])
         projected = project_actions(record, RecordingAdapter())
         self.assertTrue(all(action["state"] == "completed" for action in projected["actions"] if action["kind"] == "create_debt_issue"))
+
+    def test_v3_rejects_missing_or_malformed_coverage_transactionally(self) -> None:
+        request_value = {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA, "url": "https://example.test/pull/42", "docs_impact_source_key": "github-pr:17:42:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install", "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
+            "coverage_cells": ["one", "two"], "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_elapsed_seconds": 60, "max_non_progress": 1}}
+        root = new_journey(request_value, now=100)
+        missing, action = admit_child(root, decision(), now=101)
+        self.assertIsNone(action)
+        self.assertEqual(missing["coverage_results"], [])
+        malformed, action = admit_child(root, {**decision(), "coverage_cells": [{"identity": "one", "classification": "unmet", "evidence_paths": ["docs/one.md"]}, {"identity": "two", "classification": "bad", "evidence_paths": ["docs/two.md"]}]}, now=101)
+        self.assertIsNone(action)
+        self.assertEqual(malformed["coverage_results"], [])
+        self.assertEqual(malformed["actions"], [])
+
+    def test_v3_human_required_cell_stages_human_review_not_a_bud(self) -> None:
+        request_value = {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA, "url": "https://example.test/pull/42", "docs_impact_source_key": "github-pr:17:42:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install", "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
+            "coverage_cells": ["review"], "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_elapsed_seconds": 60, "max_non_progress": 1}}
+        record, action = begin_journey(request_value, {**decision(), "coverage_cells": [{"identity": "review", "classification": "human-required", "evidence_paths": ["docs/review.md"]}]}, now=100)
+        assert record is not None and action is not None
+        self.assertEqual(record["buds"], [])
+        self.assertEqual(record["state"], "owner-review-required")
+        self.assertEqual(action["kind"], "post_root_status")
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
         journey = new_journey({
             **request(),
