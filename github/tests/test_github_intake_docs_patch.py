@@ -74,6 +74,15 @@ class DocsPatchTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 docs_patch.validate_artifact(malformed)
 
+    def test_artifact_rejects_every_symlink_mode_form(self) -> None:
+        for mode_line in ("new file mode 120000", "old mode 120000", "deleted file mode 120000", "index 1111111..2222222 120000"):
+            with self.subTest(mode_line=mode_line):
+                artifact = proposal()
+                artifact["diff"] = DIFF.replace("index 1111111..2222222 100644", mode_line)
+                artifact["patch_sha256"] = hashlib.sha256(artifact["diff"].encode()).hexdigest()
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    docs_patch.validate_artifact(artifact)
+
 
 if __name__ == "__main__":
     unittest.main()

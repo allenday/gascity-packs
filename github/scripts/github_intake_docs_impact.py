@@ -27,9 +27,13 @@ def verify_materialized_patch_files(checkout: pathlib.Path, proposal: dict[str, 
     for item in proposal["files"]:
         path = root / str(item["path"])
         try:
+            if path.is_symlink():
+                raise ValueError(f"materialized documentation file is a symlink: {item['path']!r}")
             path.resolve().relative_to(root)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
         except (OSError, ValueError) as exc:
+            if "symlink" in str(exc):
+                raise
             raise ValueError(f"could not verify materialized documentation file {item['path']!r}") from exc
         if digest != item["sha256"]:
             raise ValueError(f"materialized documentation file sha256 does not match {item['path']!r}")

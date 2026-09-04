@@ -57,6 +57,10 @@ class DocsImpactProjectionTests(unittest.TestCase):
             (checkout / "docs" / "guide.md").write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "sha256"):
                 impact.verify_materialized_patch_files(checkout, proposal)
+            (checkout / "docs" / "guide.md").unlink()
+            (checkout / "docs" / "guide.md").symlink_to("/tmp/not-a-doc")
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                impact.verify_materialized_patch_files(checkout, proposal)
 
     def test_valid_same_repository_review_gets_an_app_owned_stacked_plan(self) -> None:
         plan = impact.followup_pr_plan(pull_request(), review())

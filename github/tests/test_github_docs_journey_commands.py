@@ -330,6 +330,9 @@ class DocsJourneyCommandTests(unittest.TestCase):
 
         self.assertEqual(published["commit_sha"], SHA)
 
+        with self.assertRaisesRegex(ValueError, "commit_sha"):
+            publisher.publish({}, review, published_intent={**intent, "commit_sha": "not-a-sha"})
+
     def test_trusted_direct_publisher_rechecks_the_source_head_after_push(self) -> None:
         class Gateway:
             def __init__(self) -> None:

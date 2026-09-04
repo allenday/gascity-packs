@@ -68,6 +68,8 @@ class GitHubDirectPatchPublisher:
                     or published_intent.get("marker") != marker):
                 raise ValueError("derived App branch already exists; refusing untrusted adoption")
             commit_sha = str(published_intent.get("commit_sha") or "").lower()
+            if docs_patch.GIT_SHA_PATTERN.fullmatch(commit_sha) is None:
+                raise ValueError("persisted direct publication commit_sha must be a 40-character lowercase Git SHA")
         else:
             def before_push(commit_sha: str) -> None:
                 intent = {"repository": repository, "branch": branch, "marker": marker, "commit_sha": commit_sha}

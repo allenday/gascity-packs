@@ -23,7 +23,8 @@ DOCUMENTATION_FILENAMES = {"readme.md", "changelog.md", "contributing.md"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIFF_PATH_PATTERN = re.compile(r"^diff --git a/(.+) b/(.+)$", re.MULTILINE)
-GITLINK_MODE_PATTERN = re.compile(r"^(?:new|old) (?:file )?mode 160000$|^index [0-9a-f]+\.\.[0-9a-f]+ 160000$", re.MULTILINE)
+GITLINK_MODE_PATTERN = re.compile(r"^(?:new|old|deleted) (?:file )?mode 160000$|^index [0-9a-f]+\.\.[0-9a-f]+ 160000$", re.MULTILINE)
+SYMLINK_MODE_PATTERN = re.compile(r"^(?:new|old|deleted) (?:file )?mode 120000$|^index [0-9a-f]+\.\.[0-9a-f]+ 120000$", re.MULTILINE)
 RFC3339_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 ROOT_FIELDS = {
     "schema_version", "status", "generated_at", "identity", "patch_sha256", "diff", "files", "claims", "checks",
@@ -106,7 +107,7 @@ def _validate_diff(diff: Any, patch_sha256: str, files: list[dict[str, Any]]) ->
         raise ValueError("diff is too large")
     if "\x00" in diff or "GIT binary patch" in diff or "Binary files " in diff:
         raise ValueError("binary diff is not allowed")
-    if "new file mode 120000" in diff or "old mode 120000" in diff:
+    if SYMLINK_MODE_PATTERN.search(diff):
         raise ValueError("symlink diff is not allowed")
     if GITLINK_MODE_PATTERN.search(diff):
         raise ValueError("gitlink diff is not allowed")
