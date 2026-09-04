@@ -124,6 +124,61 @@ class RecordingAdapter:
 
 
 class DocsBootstrapTests(unittest.TestCase):
+    def test_app_projection_rejects_the_bare_gas_city_branch_namespace(self) -> None:
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        with self.assertRaisesRegex(ValueError, "named App-owned"):
+            adapter.create_docs_pr(
+                {"schema_version": 3},
+                {"id": "pr", "branch": "gas-city/", "commit_sha": SHA},
+                None,
+            )
+
+    def test_app_projects_a_v3_direct_child_from_its_context_installation_and_source_branch(self) -> None:
+        root = {
+            "schema_version": 3,
+            "context": {
+                "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+                "kind": "github-pr", "key": "github-pr:17:9:" + SHA,
+                "url": "https://github.com/allenday/demo/pull/9",
+                "docs_impact_source_key": "github-pr:17:9:" + SHA,
+                "default_branch": "feature/install", "default_branch_sha": SHA,
+                "projection_capabilities": [],
+            },
+        }
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install",
+                  "commit_sha": SHA, "title": "Docs", "body": "Body"}
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}
+        adapter.app_login = "gas-city[bot]"
+        with mock.patch("github_docs_journey.common.create_installation_token", return_value="token") as token, mock.patch(
+            "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=None,
+        ), mock.patch(
+            "github_docs_journey.common.github_api_request", return_value={"object": {"sha": SHA}},
+        ), mock.patch(
+            "github_docs_journey.common.create_pull_request", return_value={"number": 10},
+        ) as create:
+            result = adapter.create_docs_pr(root, action, None)
+
+        self.assertEqual(result, {"number": 10})
+        token.assert_called_once_with(adapter.app_config, "91")
+        self.assertEqual(create.call_args.args[6], "feature/install")
+
+    def test_app_projection_adopts_the_existing_direct_child_pr_on_replay(self) -> None:
+        root = {"schema_version": 3, "context": {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91"}}
+        action = {"id": "direct-pr", "branch": "gas-city/install", "commit_sha": SHA}
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}
+        adapter.app_login = "gas-city[bot]"
+        existing = {"number": 10, "head": {"ref": "gas-city/install"}}
+        with mock.patch("github_docs_journey.common.create_installation_token", return_value="token"), mock.patch(
+            "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=existing,
+        ), mock.patch("github_docs_journey.common.github_api_request") as ref, mock.patch(
+            "github_docs_journey.common.create_pull_request",
+        ) as create:
+            self.assertEqual(adapter.create_docs_pr(root, action, None), existing)
+        ref.assert_not_called()
+        create.assert_not_called()
+
     def test_new_records_normalize_each_context_kind_to_the_single_recursion_contract(self) -> None:
         path = {
             "domain": "techdocs",

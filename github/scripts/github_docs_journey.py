@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import posixpath
+import re
 import tempfile
 import time
 import urllib.parse
@@ -417,7 +418,7 @@ def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -
     branch = branch_update.get("branch")
     commit_sha = branch_update.get("commit_sha")
     evidence = branch_update.get("evidence")
-    if not isinstance(branch, str) or not branch.startswith("gas-city/"):
+    if not isinstance(branch, str) or not _valid_gas_city_branch(branch):
         return False, None
     if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
         return False, None
@@ -425,6 +426,18 @@ def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -
         return True, {"branch": branch, "commit_sha": _sha(commit_sha, "documentation_branch.commit_sha"), "evidence": evidence}
     except ValueError:
         return False, None
+
+
+def _valid_gas_city_branch(branch: str) -> bool:
+    """Apply Git's ref-name constraints to the Pack-owned branch namespace."""
+    if not branch.startswith("gas-city/") or branch == "gas-city/" or branch.endswith(("/", ".")):
+        return False
+    if ".." in branch or "@{" in branch or "//" in branch:
+        return False
+    if any(ord(character) < 32 or ord(character) == 127 or character in " ~^:?*[\\" for character in branch):
+        return False
+    components = branch.split("/")
+    return all(component and not component.startswith(".") and not component.endswith(".lock") for component in components)
 
 
 def _documentation_pr_body(root: dict[str, Any], child: dict[str, Any]) -> str:
@@ -768,7 +781,7 @@ class FileBootstrapStore:
 
     def _path(self, identity: str) -> pathlib.Path:
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        directory = self.journeys_dir if identity.startswith("github-docs-journey:") else self.roots_dir
+        directory = self.journeys_dir if identity.startswith(("github-docs-journey:", "github-docs-recursion:")) else self.roots_dir
         return directory / f"{digest}.json"
 
     def load(self, identity: str) -> dict[str, Any] | None:
@@ -948,10 +961,10 @@ class GitHubCityBootstrapAdapter:
         # A docs PR is only allowed from an explicit App-owned branch supplied
         # by the blocking worker; this controller never writes an author branch.
         branch = str(action.get("branch") or "")
-        if not branch.startswith("gas-city/"):
-            raise ValueError("create_docs_pr requires an App-owned gas-city/ branch")
+        if not _valid_gas_city_branch(branch):
+            raise ValueError("create_docs_pr requires a named App-owned gas-city/ branch")
         owner, repo = _repository_parts(root)
-        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        token = common.create_installation_token(self.app_config, str(_installation_id(root)))
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
@@ -1309,6 +1322,17 @@ def _context(value: Any) -> dict[str, Any]:
     if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item.strip() for item in capabilities):
         raise ValueError("context projection_capabilities must be a list of text")
     result["projection_capabilities"] = sorted(set(capabilities))
+    if result["kind"] == "github-pr" and any(key in value for key in ("pr_number", "source_branch", "assignment_sha256", "candidate_sha256")):
+        pr_number = value.get("pr_number")
+        if type(pr_number) is not int or pr_number <= 0:
+            raise ValueError("context pr_number must be a positive integer")
+        result["pr_number"] = pr_number
+        result["source_branch"] = _required_text(value, "source_branch")
+        for key in ("assignment_sha256", "candidate_sha256"):
+            digest = value.get(key)
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ValueError(f"context {key} must be a SHA-256 digest")
+            result[key] = digest
     return result
 
 

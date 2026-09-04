@@ -47,3 +47,35 @@ documentation follow-up is justified. Do not emit `proposal-ready`: that
 verdict is reserved for a trusted builder that has produced a complete proposal
 artifact. When the supplied evidence is insufficient, return `inconclusive`
 rather than making assumptions.
+
+For `no-impact`, `docs-sufficient`, or `inconclusive`, return the review object
+above unchanged so the trusted bridge can preserve the existing schema-v1
+candidate path. A `docs-change-required` result instead returns exactly this
+classified object:
+
+```json
+{
+  "artifact": {"the complete github-pr-docs-impact-review object": "with verdict docs-change-required"},
+  "persona_goal_path": {
+    "domain": "techdocs",
+    "role": "specific affected reader",
+    "job": "specific job that changed",
+    "starting_context": "what the reader starts with",
+    "success_condition": "observable successful outcome",
+    "documentation_entry_point": "repository-relative documentation entry path"
+  },
+  "coverage_cells": [
+    {
+      "identity": "stable persona:goal:documentation-type identity",
+      "classification": "sufficient | unmet | human-required",
+      "evidence_paths": ["sorted unique paths copied from evidence_bundle.files"]
+    }
+  ]
+}
+```
+
+Classify every affected cell exactly once and retain their declared order.
+Use only assignment file paths for `evidence_paths`; never invent evidence or
+provenance. The trusted bridge binds this classified result to the exact raw
+assignment digest and produces the schema-v2 direct-admission candidate. The
+reviewer does not construct recursion identity, budgets, or child provenance.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -22,6 +23,65 @@ def assignment() -> dict[str, object]:
 
 
 class DocsPatchWorkerTests(unittest.TestCase):
+    def test_direct_admission_candidate_has_a_separate_v2_validation_boundary(self) -> None:
+        self.assertTrue(callable(getattr(worker, "validate_direct_admission_candidate", None)))
+
+    def test_direct_admission_candidate_validates_exact_ordered_classifications(self) -> None:
+        from github.tests.test_github_intake_docs_patch import review
+        raw = json.dumps(assignment(), sort_keys=True, separators=(",", ":")).encode()
+        artifact = review()
+        artifact["verdict"] = "docs-change-required"
+        artifact["proposal"] = None
+        candidate = {
+            "schema_version": 2,
+            "snapshot_sha256": hashlib.sha256(raw).hexdigest(),
+            "artifact": artifact,
+            "persona_goal_path": {
+                "domain": "techdocs", "role": "developer", "job": "use the interface",
+                "starting_context": "a checked-out pull request", "success_condition": "the interface is usable",
+                "documentation_entry_point": "README.md",
+            },
+            "coverage_cells": [
+                {"identity": "developer:use-interface:how-to", "classification": "unmet", "evidence_paths": ["docs/guide.md"]},
+            ],
+        }
+
+        validated = worker.validate_direct_admission_candidate(raw, candidate)
+
+        self.assertEqual(validated["schema_version"], 2)
+        self.assertEqual(validated["snapshot_sha256"], candidate["snapshot_sha256"])
+        self.assertEqual(validated["persona_goal_path"], candidate["persona_goal_path"])
+        self.assertEqual(validated["coverage_cells"], candidate["coverage_cells"])
+        self.assertEqual(validated["artifact"]["identity"], candidate["artifact"]["identity"])
+
+    def test_direct_admission_rejects_v1_and_malformed_v2_without_changing_legacy_validation(self) -> None:
+        from github.tests.test_github_intake_docs_patch import review
+        raw = json.dumps(assignment(), sort_keys=True, separators=(",", ":")).encode()
+        artifact = review()
+        artifact["verdict"] = "docs-change-required"
+        artifact["proposal"] = None
+        legacy = {"schema_version": 1, "snapshot_sha256": hashlib.sha256(raw).hexdigest(), "artifact": artifact}
+        self.assertEqual(worker.validate_final_candidate(raw, legacy)["schema_version"], 1)
+        with self.assertRaisesRegex(ValueError, "v2"):
+            worker.validate_direct_admission_candidate(raw, legacy)
+
+        base = {
+            "schema_version": 2, "snapshot_sha256": hashlib.sha256(raw).hexdigest(), "artifact": artifact,
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "use the interface", "starting_context": "checkout", "success_condition": "usable", "documentation_entry_point": "README.md"},
+            "coverage_cells": [{"identity": "developer:use-interface:how-to", "classification": "unmet", "evidence_paths": ["docs/guide.md"]}],
+        }
+        invalids = [
+            {**base, "snapshot_sha256": "0" * 64},
+            {**base, "coverage_cells": [{**base["coverage_cells"][0], "classification": "maybe"}]},
+            {**base, "coverage_cells": [{**base["coverage_cells"][0], "evidence_paths": ["docs/not-in-assignment.md"]}]},
+            {**base, "coverage_cells": [base["coverage_cells"][0], base["coverage_cells"][0]]},
+            {**base, "extra": True},
+        ]
+        for value in invalids:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    worker.validate_direct_admission_candidate(raw, value)
+
     def test_worker_cli_writes_and_reports_a_normal_final_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

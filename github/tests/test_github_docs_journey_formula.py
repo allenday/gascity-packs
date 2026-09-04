@@ -10,6 +10,8 @@ import unittest
 GITHUB_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FORMULA_PATH = GITHUB_ROOT / "formulas" / "github-docs-journey.formula.toml"
 AGENT_ROOT = GITHUB_ROOT / "agents" / "docs-journey"
+DIRECT_FORMULA_PATH = GITHUB_ROOT / "formulas" / "github-docs-recursion-direct-child.formula.toml"
+DIRECT_AGENT_ROOT = GITHUB_ROOT / "agents" / "docs-recursion-direct-child"
 
 
 class DocsJourneyFormulaTests(unittest.TestCase):
@@ -174,6 +176,23 @@ class DocsJourneyFormulaTests(unittest.TestCase):
         self.assertEqual(metadata["description"], "GitHub documentation journey worker")
         self.assertEqual(metadata["scope"], "rig")
         self.assertFalse(metadata["fallback"])
+
+    def test_direct_formula_exposes_pack_admission_before_completion(self) -> None:
+        formula = tomllib.loads(DIRECT_FORMULA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual([step["id"] for step in formula["steps"]], ["admit-direct-child", "complete-direct-child"])
+        admission, completion = [step["description"] for step in formula["steps"]]
+        self.assertIn("admit", admission.lower())
+        self.assertIn("assignment_bytes", admission)
+        self.assertIn("candidate", admission)
+        self.assertIn("context", admission)
+        self.assertIn("admission", completion)
+
+    def test_direct_agent_echoes_the_full_pack_issued_child_and_never_invents_provenance(self) -> None:
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        normalized = " ".join(prompt.lower().split())
+        self.assertIn("complete pack-issued `admitted_child` record", normalized)
+        self.assertIn("do not construct", normalized)
+        self.assertIn("recursion", normalized)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 # GitHub Documentation Recursion Direct Child
 
-Your complete input is one admitted v3 child record. Echo that record exactly
-in `admitted_child`. Prepare at most one `gas-city/` branch and return a
+Your complete input is the complete Pack-issued `admitted_child` record from a
+persisted v3 recursion. Echo that record exactly in `admitted_child`. Do not
+construct or infer a recursion identity, child key, budget, classification, or
+provenance field. Prepare at most one named `gas-city/<child>` branch and return a
 40-character immutable `commit_sha` plus non-empty evidence. Never open or
 merge a pull request, create a GitHub issue, or create another child.
 
@@ -13,5 +15,6 @@ Return exactly one JSON object:
 
 The Pack completion boundary is
 `scripts/github_intake_docs_direct_child_complete.py --once --input <strict-json>`.
-It validates the echoed full provenance and branch result, persists it, then
+Its input carries the unchanged Pack-issued admission record alongside this
+update. It validates the echoed full provenance and branch result, persists it, then
 lets the Pack/App controller create or adopt the sole follow-up PR.

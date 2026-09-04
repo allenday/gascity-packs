@@ -32,6 +32,14 @@ class DocsImpactReviewerPackageTests(unittest.TestCase):
         self.assertIn("Use `docs-change-required`", prompt)
         self.assertIn("Do not emit `proposal-ready`", prompt)
 
+    def test_prompt_requires_exact_coverage_classification_for_direct_admission(self) -> None:
+        prompt = (AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        self.assertIn("persona_goal_path", prompt)
+        self.assertIn("coverage_cells", prompt)
+        self.assertIn('"classification": "sufficient | unmet | human-required"', prompt)
+        self.assertIn("trusted bridge", prompt.lower())
+        self.assertIn("schema-v2", prompt.lower())
+
     def test_reviewer_metadata_and_prompt_remain_deployment_neutral_and_credential_free(self) -> None:
         artifacts = [
             AGENT_ROOT / "agent.toml",
