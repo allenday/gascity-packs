@@ -585,10 +585,7 @@ def reconcile_root(root: dict[str, Any], now: float) -> tuple[dict[str, Any], li
         return updated, [action]
     pending = _pending(updated)
     if pending:
-        if updated.get("schema_version") == 3 and all(
-            action.get("kind") == "create_debt_issue" and "bud_identity" in action
-            for action in pending
-        ):
+        if all(_is_v3_bud_action(updated, action) for action in pending):
             return updated, pending
         updated["non_progress_count"] += 1
         if updated["non_progress_count"] >= _execution_budgets(updated)["max_non_progress"]:
@@ -1037,7 +1034,13 @@ def project_configured_root(state_dir: pathlib.Path | str, identity: str) -> dic
             try:
                 return project_actions(root, GitHubCityBootstrapAdapter(app), persist=store.save)
             except Exception:
-                retried, _ = reconcile_root(root, now=now)
+                persisted = store.load(identity)
+                if persisted is None:
+                    raise ValueError("bootstrap root was not found after projection failure")
+                pending = _pending(persisted)
+                if pending and _is_v3_bud_action(persisted, pending[0]):
+                    return store.save(persisted)
+                retried, _ = reconcile_root(persisted, now=now)
                 return store.save(retried)
         reconciled, _ = reconcile_root(root, now=time.time())
         return store.save(reconciled)
@@ -1144,6 +1147,14 @@ def _child_action_prefix(child: dict[str, Any]) -> str:
 
 def _pending(root: dict[str, Any]) -> list[dict[str, Any]]:
     return [copy.deepcopy(action) for action in root["actions"] if action.get("state") == "pending"]
+
+
+def _is_v3_bud_action(root: dict[str, Any], action: dict[str, Any]) -> bool:
+    return (
+        root.get("schema_version") == 3
+        and action.get("kind") == "create_debt_issue"
+        and "bud_identity" in action
+    )
 
 
 def _action(action_id: str, kind: str, **fields: Any) -> dict[str, Any]:

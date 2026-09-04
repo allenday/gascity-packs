@@ -366,6 +366,59 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(completed["actions"][0]["state"], "completed")
         self.assertEqual(adapter.created["debt"], [action["id"]])
 
+    @mock.patch("github_docs_bootstrap.GitHubCityBootstrapAdapter")
+    @mock.patch("github_docs_bootstrap.common.load_effective_config")
+    @mock.patch("github_docs_bootstrap.time.time", return_value=102)
+    def test_v3_failed_bud_projection_preserves_persisted_child_progress_in_mixed_action_set(
+        self, now: mock.Mock, load_config: mock.Mock, adapter_class: mock.Mock,
+    ) -> None:
+        request_value = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA,
+                        "url": "https://example.test/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["active", "deferred"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        root, _ = begin_journey(request_value, {**decision(), "coverage_cells": [
+            {"identity": "active", "classification": "unmet", "evidence_paths": ["docs/active.md"]},
+            {"identity": "deferred", "classification": "unmet", "evidence_paths": ["docs/deferred.md"]},
+        ]}, now=100)
+        assert root is not None
+        issue_action, bud_action = root["actions"]
+        adapter = RecordingAdapter(fail_after={"debt"})
+        load_config.return_value = {"app": {"slug": "gas-city"}}
+        adapter_class.return_value = adapter
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            first = project_configured_root(directory, root["identity"])
+            second = project_configured_root(directory, root["identity"])
+            adapter.fail_after.clear()
+            retried = project_configured_root(directory, root["identity"])
+            completed = project_configured_root(directory, root["identity"])
+
+        self.assertEqual([first["state"], second["state"]], ["active", "active"])
+        self.assertEqual([first["non_progress_count"], second["non_progress_count"]], [0, 0])
+        self.assertEqual(
+            [(action["kind"], action["state"]) for action in first["actions"]],
+            [("create_issue", "completed"), ("create_debt_issue", "pending"), ("create_bead", "pending")],
+        )
+        self.assertEqual(
+            [(action["kind"], action["state"]) for action in second["actions"]],
+            [("create_issue", "completed"), ("create_debt_issue", "pending"), ("create_bead", "pending")],
+        )
+        self.assertEqual(retried["actions"][1]["state"], "completed")
+        self.assertTrue(all(action["state"] == "completed" for action in completed["actions"]))
+        self.assertEqual(adapter.created["issue"], [issue_action["id"]])
+        self.assertEqual(adapter.created["debt"], [bud_action["id"]])
+
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
         journey = new_journey({
             **request(),
