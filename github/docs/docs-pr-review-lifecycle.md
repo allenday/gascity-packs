@@ -135,3 +135,13 @@ They prove the pack-level transitions for duplicate delivery, lease recovery,
 late candidates, and once-only terminal completion. A deployment enabling the
 feature must additionally exercise its concrete adapters against a test GitHub
 Check Run and durable-store restart.
+
+## Documentation recursion handoff
+
+After a validated `github-pr-docs-impact-review`, use the reusable recursion
+commands: `start-or-admit`, `activate-bud`, `record-child-update`, and
+`project-until-settled`. New records normalize pull-request, issue, and
+operator contexts into `identity`, `context`, ordered `persona_goal_path`,
+`budgets`, `children`, `buds`, `actions`, and `state`. A bud is only an
+evidence-backed, human-visible deferred item; it never starts child work until
+an explicit activation supplies a new context.

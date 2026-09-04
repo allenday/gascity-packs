@@ -101,6 +101,8 @@ def new_journey(request: dict[str, Any], now: float) -> dict[str, Any]:
     """
     if not isinstance(request, dict):
         raise ValueError("documentation journey request must be an object")
+    if "context" in request or "persona_goal_path" in request:
+        return _new_recursion(request, now)
     repository_id = _required_text(request, "repository_id")
     repository = _required_text(request, "repository")
     installation_id = _required_text(request, "installation_id")
@@ -212,10 +214,44 @@ def begin_journey(
     normalized = _exact_decision(candidate, decision)
     if normalized is None:
         return None, None
-    if (normalized["journey_disposition"] == "non-blocking"
+    if (candidate.get("schema_version") == 2 and normalized["journey_disposition"] == "non-blocking"
             and candidate["journey"]["backfill_policy"] == "blocking-only"):
         return None, None
     return admit_child(candidate, decision, now)
+
+
+def _new_recursion(request: dict[str, Any], now: float) -> dict[str, Any]:
+    """Create the current single-recursion record.
+
+    Version 3 intentionally gives every entry point the same surface: context
+    is immutable provenance, and persona_goal_path is the only traversal
+    declaration.  v1/v2 constructors above remain readable for replay.
+    """
+    repository_id = _required_text(request, "repository_id")
+    repository = _required_text(request, "repository")
+    installation_id = _required_text(request, "installation_id")
+    context = _context({**(request.get("context") if isinstance(request.get("context"), dict) else {}),
+                        "repository_id": repository_id, "repository": repository,
+                        "installation_id": installation_id})
+    path = _persona_goal_path(request.get("persona_goal_paths", request.get("persona_goal_path")))
+    budgets = _recursion_budgets(request.get("budgets"))
+    return {
+        "schema_version": 3,
+        "identity": f"github-docs-recursion:{repository_id}:{context['key']}:{context['default_branch_sha']}",
+        "context": context,
+        "persona_goal_path": path,
+        "budgets": budgets,
+        "children": [],
+        "buds": [],
+        "actions": [],
+        "state": "active",
+        "created_at": now,
+        "children_used": 0,
+        "docs_prs_used": 0,
+        "buds_used": 0,
+        "non_progress_count": 0,
+        "visited_surfaces": [],
+    }
 
 
 def journey_request_matches(existing_journey: dict[str, Any], request: dict[str, Any]) -> bool:
@@ -230,6 +266,9 @@ def journey_request_matches(existing_journey: dict[str, Any], request: dict[str,
         candidate = new_journey(request, now=existing["created_at"])
     except (KeyError, ValueError):
         return False
+    if existing.get("schema_version") == 3:
+        fields = ("identity", "context", "persona_goal_path", "budgets")
+        return all(existing.get(field) == candidate.get(field) for field in fields)
     if existing.get("schema_version") != 2:
         return False
     fields = (
@@ -246,6 +285,8 @@ def admit_child(root: dict[str, Any], decision: dict[str, Any], now: float) -> t
     is the producer's machine verdict; rationale is deliberately opaque.
     """
     updated = _copy_root(root)
+    if updated.get("schema_version") == 3:
+        return _admit_recursion(updated, decision, now)
     if updated["state"] in TERMINAL_STATES:
         return updated, None
     # A foreign or malformed document is inert.  It must never obtain the
@@ -309,17 +350,15 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     updated = _copy_root(root)
     if updated["state"] in TERMINAL_STATES or not isinstance(update, dict):
         return updated, None
-    expected_kind = (
-        "github-docs-journey-child-update"
-        if updated.get("schema_version") == 2
-        else "github-docs-bootstrap-child-update"
-    )
+    expected_kind = {1: "github-docs-bootstrap-child-update", 2: "github-docs-journey-child-update", 3: "github-docs-recursion-child-update"}[updated["schema_version"]]
     if update.get("schema_version") != 1 or update.get("kind") != expected_kind:
         return updated, None
     admitted = update.get("admitted_child")
     if not isinstance(admitted, dict):
         return updated, None
-    child = next((item for item in updated["children"] if _same_child_provenance(item, admitted)), None)
+    child = next((item for item in updated["children"] if (
+        item.get("identity") == admitted.get("identity") if updated.get("schema_version") == 3 else _same_child_provenance(item, admitted)
+    )), None)
     if child is None or child.get("state") != "admitted":
         return updated, None
     state = update.get("state")
@@ -343,9 +382,9 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
         # The controller, not an untrusted child update, owns public PR intent.
         title=f"{_run_label(updated)} follow-up: {child['key'][:12]}",
         body=_documentation_pr_body(updated, child),
-        base=updated["default_branch"],
+        base=updated["context"]["default_branch"] if updated.get("schema_version") == 3 else updated["default_branch"],
         worker_evidence=copy.deepcopy(update["documentation_branch"]["evidence"])
-        if updated.get("schema_version") == 2 else [],
+        if updated.get("schema_version") in {2, 3} else [],
     )
     if isinstance(documentation_branch, dict):
         action["commit_sha"] = documentation_branch["commit_sha"]
@@ -391,7 +430,7 @@ def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -
 
 def _documentation_pr_body(root: dict[str, Any], child: dict[str, Any]) -> str:
     """Build deterministic public PR context from admitted controller data."""
-    source = root.get("source", {})
+    source = root.get("context", root.get("source", {}))
     source_url = source.get("url") if isinstance(source, dict) else None
     lines = [f"App-owned {_run_label(root).lower()} follow-up."]
     if isinstance(source_url, str) and source_url:
@@ -440,6 +479,49 @@ def _admit_debt(root: dict[str, Any], decision: dict[str, Any], key: str) -> tup
     return root, action
 
 
+def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Admit exactly one on-path child or record exactly one inert bud."""
+    if root["state"] in TERMINAL_STATES:
+        return root, None
+    normalized = _exact_decision(root, decision)
+    if normalized is None:
+        return root, None
+    terminal = _admission_terminal(root, normalized, now)
+    if terminal is not None:
+        return _terminal(root, terminal)
+    key = _child_key(root["identity"], normalized["identity"], normalized["paths"])
+    if normalized["journey_disposition"] == "non-blocking":
+        if any(bud.get("identity") == key for bud in root["buds"]):
+            return root, None
+        if root["buds_used"] >= root["budgets"]["max_buds"]:
+            return _terminal(root, "budget-exhausted")
+        bud = {"identity": key, "state": "recorded", "context": copy.deepcopy(root["context"]),
+               "persona_goal_path": copy.deepcopy(root["persona_goal_path"]),
+               "decision_identity": normalized["identity"], "decision_digest": normalized["digest"],
+               "evidence_paths": normalized["paths"]}
+        root["buds"].append(bud)
+        root["buds_used"] += 1
+        root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(normalized["paths"]))
+        action = _action(f"docs-recursion-bud:{key}:create_bud_issue", "create_bud_issue", bud_identity=key)
+        root["actions"].append(action)
+        return root, action
+    if any(child.get("key") == key for child in root["children"]) or any(path in root["visited_surfaces"] for path in normalized["paths"]):
+        return root, None
+    if (normalized["depth"] > root["budgets"]["max_depth"] or root["children_used"] >= root["budgets"]["max_children"]
+            or root["docs_prs_used"] >= root["budgets"]["max_docs_prs"]):
+        return _terminal(root, "budget-exhausted")
+    child = {"key": key, "identity": key, "state": "admitted", "depth": normalized["depth"],
+             "snapshot_sha": root["context"]["default_branch_sha"], "decision_identity": normalized["identity"],
+             "decision_digest": normalized["digest"], "evidence_paths": normalized["paths"],
+             "context": copy.deepcopy(root["context"]), "persona_goal_path": copy.deepcopy(root["persona_goal_path"])}
+    root["children"].append(child)
+    root["children_used"] += 1
+    root["visited_surfaces"] = sorted(set(root["visited_surfaces"]) | set(normalized["paths"]))
+    action = _action(f"docs-recursion-child:{key}:create_issue", "create_issue", child_key=key)
+    root["actions"].append(action)
+    return root, action
+
+
 def reconcile_root(root: dict[str, Any], now: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Re-emit pending intents and make one deterministic terminal transition."""
     updated = _copy_root(root)
@@ -471,7 +553,7 @@ def _admission_terminal(root: dict[str, Any], decision: dict[str, Any], now: flo
         return "budget-exhausted"
     if decision["product_ambiguity"]:
         return "blocked-on-product-decision"
-    if decision["snapshot_sha"] != root["default_branch_sha"]:
+    if decision["snapshot_sha"] != _snapshot_sha(root):
         return "owner-review-required"
     return None
 
@@ -533,9 +615,11 @@ def _exact_decision(root: dict[str, Any], decision: Any) -> dict[str, Any] | Non
         if review["verdict"] != "docs-change-required":
             return None
         identity = review["identity"]
-        if identity["repository_id"] != root["repository_id"] or identity["repository"] != root["repository"]:
+        if identity["repository_id"] != _repository_id(root) or identity["repository"] != _repository(root):
             return None
         if root.get("schema_version") == 2 and identity["source_key"] != root.get("docs_impact_source_key"):
+            return None
+        if root.get("schema_version") == 3 and identity["source_key"] != root["context"]["docs_impact_source_key"]:
             return None
     except ValueError:
         return None
@@ -991,16 +1075,27 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("root is invalid")
     result = copy.deepcopy(root)
     schema_version = result.get("schema_version")
-    if schema_version not in {1, 2}:
+    if schema_version not in {1, 2, 3}:
         raise ValueError("journey schema version is invalid")
     if schema_version == 1:
         _required_text(result, "root_issue_url")
         root_issue_number = result.get("root_issue_number")
         if type(root_issue_number) is not int or root_issue_number <= 0:
             raise ValueError("root_issue_number must be a positive integer")
-    else:
+    elif schema_version == 2:
         result["source"] = _source(result.get("source"))
         result["docs_impact_source_key"] = _required_text(result, "docs_impact_source_key")
+    else:
+        result["context"] = _context(result.get("context"))
+        result["persona_goal_path"] = _persona_goal_path(result.get("persona_goal_path"))
+        result["budgets"] = _recursion_budgets(result.get("budgets"))
+        for key in ("children", "buds", "actions", "visited_surfaces"):
+            if not isinstance(result.get(key), list):
+                raise ValueError(f"root {key} must be a list")
+        for key in ("children_used", "docs_prs_used", "buds_used", "non_progress_count"):
+            if type(result.get(key)) is not int or result[key] < 0:
+                raise ValueError(f"root {key} must be a non-negative integer")
+        return result
     for key in ("children", "debts", "actions", "visited_surfaces"):
         if not isinstance(result.get(key), list):
             raise ValueError(f"root {key} must be a list")
@@ -1009,6 +1104,64 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
     for key in ("children_used", "docs_prs_used", "debt_issues_used", "non_progress_count"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise ValueError(f"root {key} must be a non-negative integer")
+    return result
+
+
+def _repository_id(root: dict[str, Any]) -> str:
+    return root["context"]["repository_id"] if root.get("schema_version") == 3 else root["repository_id"]
+
+
+def _repository(root: dict[str, Any]) -> str:
+    return root["context"]["repository"] if root.get("schema_version") == 3 else root["repository"]
+
+
+def _snapshot_sha(root: dict[str, Any]) -> str:
+    return root["context"]["default_branch_sha"] if root.get("schema_version") == 3 else root["default_branch_sha"]
+
+
+def _context(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("context is required")
+    result = {key: _required_text(value, key) for key in ("kind", "key", "url", "repository_id", "repository", "installation_id", "docs_impact_source_key", "default_branch")}
+    if result["kind"] not in {"github-pr", "github-issue", "operator-request"}:
+        raise ValueError("context kind is unsupported")
+    result["default_branch_sha"] = _sha(value.get("default_branch_sha"), "context default_branch_sha")
+    capabilities = value.get("projection_capabilities", [])
+    if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item.strip() for item in capabilities):
+        raise ValueError("context projection_capabilities must be a list of text")
+    result["projection_capabilities"] = sorted(set(capabilities))
+    return result
+
+
+def _persona_goal_path(value: Any) -> dict[str, list[dict[str, str]]]:
+    """Normalize the declared ordered paths without choosing a winner."""
+    raw_paths = value.get("paths") if isinstance(value, dict) and set(value) == {"paths"} else value
+    if isinstance(raw_paths, dict):
+        raw_paths = [raw_paths]
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise ValueError("persona_goal_path is required")
+    paths: list[dict[str, str]] = []
+    for item in raw_paths:
+        if not isinstance(item, dict):
+            raise ValueError("persona_goal_path entries must be objects")
+        result = {key: _required_text(item, key) for key in ("domain", "role", "job", "starting_context", "success_condition", "documentation_entry_point")}
+        if result["domain"] != "techdocs":
+            raise ValueError("persona_goal_path domain must be techdocs")
+        result["documentation_entry_point"] = select_documentation_root({"documentation_index": result["documentation_entry_point"]})
+        paths.append(result)
+    return {"paths": paths}
+
+
+def _recursion_budgets(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        raise ValueError("budgets must be an object")
+    fields = ("max_depth", "max_children", "max_docs_prs", "max_buds", "max_elapsed_seconds", "max_non_progress")
+    result: dict[str, int] = {}
+    for key in fields:
+        item = value.get(key)
+        if type(item) is not int or item <= 0:
+            raise ValueError(f"budget {key} must be a positive integer")
+        result[key] = item
     return result
 
 

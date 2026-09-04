@@ -77,7 +77,15 @@ def start_or_admit(state_dir: str, payload: dict[str, Any], *, now: float | None
         if journey is None:
             raise ValueError("journey admission was rejected")
         stored = store.save(journey)
-    return {"journey": stored, "action": action}
+    if action is None:
+        admission = "sufficient"
+    elif action.get("kind") == "create_issue":
+        admission = "child-admitted"
+    elif action.get("kind") == "create_bud_issue":
+        admission = "bud-recorded"
+    else:
+        admission = "human-review-required"
+    return {"journey": stored, "action": action, "admission": admission}
 
 
 def record_update(state_dir: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -97,6 +105,41 @@ def record_update(state_dir: str, payload: dict[str, Any]) -> dict[str, Any]:
         updated, action = record_child_update(journey, update)
         stored = store.save(updated)
     return {"journey": stored, "action": action}
+
+
+def activate_bud(state_dir: str, payload: dict[str, Any], *, now: float | None = None) -> dict[str, Any]:
+    """Start a fresh recursion from one recorded inert bud and new context."""
+    _only_fields(payload, {"identity", "bud_identity", "context"})
+    identity, bud_identity, context = payload["identity"], payload["bud_identity"], payload["context"]
+    if not isinstance(identity, str) or not identity.strip() or not isinstance(bud_identity, str) or not bud_identity.strip():
+        raise ValueError("identity and bud_identity must be non-empty text")
+    if not isinstance(context, dict):
+        raise ValueError("new context must be an object")
+    store = FileJourneyStore(state_dir)
+    with store.lock(identity):
+        old = store.load(identity)
+        if old is None:
+            raise ValueError("documentation journey was not found")
+        buds = old.get("buds", old.get("debts", []))
+        bud = next((item for item in buds if isinstance(item, dict) and item.get("identity", item.get("key")) == bud_identity), None)
+        if bud is None:
+            raise ValueError("bud was not found")
+        old_context = old.get("context", old.get("source"))
+        if context == old_context:
+            raise ValueError("new context must differ from the recorded bud context")
+        if old.get("schema_version") != 3:
+            raise ValueError("legacy buds are readable but cannot be activated without a normalized recursion context")
+        request = {
+            "repository_id": old["context"]["repository_id"], "repository": old["context"]["repository"],
+            "installation_id": old["context"]["installation_id"], "context": context,
+            "persona_goal_path": old["persona_goal_path"], "budgets": old["budgets"],
+        }
+        fresh = new_journey(request, time.time() if now is None else now)
+        with store.lock(fresh["identity"]):
+            if store.load(fresh["identity"]) is not None:
+                raise ValueError("activated recursion already exists")
+            stored = store.save(fresh)
+    return {"journey": stored, "action": None}
 
 
 def _pending_actions(journey: dict[str, Any]) -> list[dict[str, Any]]:
@@ -171,7 +214,7 @@ def project_until_settled(state_dir: str, identity: str, *, max_passes: int = MA
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("start-or-admit", "project", "project-until-settled", "record-child-update"))
+    parser.add_argument("operation", choices=("start-or-admit", "activate-bud", "project", "project-until-settled", "record-child-update"))
     parser.add_argument("--once", action="store_true", required=True)
     parser.add_argument("--store", default=common.docs_review_runs_dir() + "-journeys")
     parser.add_argument("--identity")
@@ -192,6 +235,8 @@ def main() -> int:
             payload = _strict_json_object(args.input)
             if args.operation == "start-or-admit":
                 result = start_or_admit(args.store, payload)
+            elif args.operation == "activate-bud":
+                result = activate_bud(args.store, payload)
             else:
                 result = record_update(args.store, payload)
     except (OSError, ValueError, RuntimeError, common.GitHubAPIError) as exc:

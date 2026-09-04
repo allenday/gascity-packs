@@ -124,6 +124,72 @@ class RecordingAdapter:
 
 
 class DocsBootstrapTests(unittest.TestCase):
+    def test_new_records_normalize_each_context_kind_to_the_single_recursion_contract(self) -> None:
+        path = {
+            "domain": "techdocs",
+            "role": "developer",
+            "job": "install the package",
+            "starting_context": "a clone of the repository",
+            "success_condition": "the package is installed successfully",
+            "documentation_entry_point": "README.md",
+        }
+        common = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {
+                "key": "github-pr:17:42:" + SHA,
+                "url": "https://github.com/allenday/demo/pull/42",
+                "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                "default_branch": "main", "default_branch_sha": SHA,
+                "projection_capabilities": ["issue-comment"],
+            },
+            "persona_goal_path": path,
+            "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                        "max_buds": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        records = [new_journey({**common, "context": {**common["context"], "kind": kind}}, now=100)
+                   for kind in ("github-pr", "github-issue", "operator-request")]
+        for record in records:
+            self.assertEqual(record["schema_version"], 3)
+            self.assertEqual(set(record), {"schema_version", "identity", "context", "persona_goal_path", "budgets", "children", "buds", "actions", "state", "created_at", "children_used", "docs_prs_used", "buds_used", "non_progress_count", "visited_surfaces"})
+            self.assertNotIn("source", record)
+            self.assertNotIn("journey", record)
+
+    def test_v3_path_gap_has_the_same_child_transition_for_each_context_kind(self) -> None:
+        for kind in ("github-pr", "github-issue", "operator-request"):
+            with self.subTest(kind=kind):
+                candidate = {
+                    "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+                    "context": {"kind": kind, "key": f"{kind}:17:42", "url": "https://example.test/context",
+                                "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                                "default_branch": "main", "default_branch_sha": SHA},
+                    "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                          "starting_context": "clone", "success_condition": "installed",
+                                          "documentation_entry_point": "README.md"},
+                    "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                "max_buds": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+                }
+                record, action = begin_journey(candidate, decision(), now=100)
+                assert record is not None and action is not None
+                self.assertEqual(record["state"], "active")
+                self.assertEqual(action["kind"], "create_issue")
+                self.assertEqual(record["children"][0]["state"], "admitted")
+
+    def test_v3_adjacent_gap_records_a_bud_without_a_child_action(self) -> None:
+        candidate = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-issue", "key": "github-issue:17:42", "url": "https://example.test/issues/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
+            "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                        "max_buds": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        record, action = begin_journey(candidate, decision(journey_disposition="non-blocking"), now=100)
+        assert record is not None and action is not None
+        self.assertEqual(action["kind"], "create_bud_issue")
+        self.assertEqual(record["children"], [])
+        self.assertEqual(len(record["buds"]), 1)
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
         journey = new_journey({
             **request(),
