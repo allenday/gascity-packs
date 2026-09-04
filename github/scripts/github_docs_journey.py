@@ -371,7 +371,7 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     child["state"] = state
     if documentation_branch is None:
         return updated, None
-    if updated["docs_prs_used"] >= updated["budgets"]["max_docs_prs"]:
+    if updated["docs_prs_used"] >= _execution_budgets(updated)["max_docs_prs"]:
         return _terminal(updated, "budget-exhausted")
     action_id = _child_action_id(child, "create_docs_pr")
     if any(action.get("id") == action_id for action in updated["actions"]):

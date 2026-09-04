@@ -176,6 +176,54 @@ class DocsBootstrapTests(unittest.TestCase):
                 self.assertEqual(action["kind"], "create_issue")
                 self.assertEqual(record["children"][0]["state"], "admitted")
 
+    def test_v3_admitted_child_stages_documentation_pr_intent_from_worker_update(self) -> None:
+        candidate = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {
+                "kind": "github-pr", "key": "github-pr:17:42:" + SHA,
+                "url": "https://github.com/allenday/demo/pull/42",
+                "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                "default_branch": "main", "default_branch_sha": SHA,
+            },
+            "persona_goal_path": {
+                "domain": "techdocs", "role": "developer", "job": "install",
+                "starting_context": "clone", "success_condition": "installed",
+                "documentation_entry_point": "README.md",
+            },
+            "coverage_cells": ["default"],
+            "execution_budgets": {
+                "max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                "max_elapsed_seconds": 60, "max_non_progress": 1,
+            },
+        }
+        record, _ = begin_journey(candidate, {
+            **decision(),
+            "coverage_cells": [{
+                "identity": "default", "classification": "unmet",
+                "evidence_paths": ["docs/guide.md"],
+            }],
+        }, now=100)
+        assert record is not None
+
+        updated, action = record_child_update(record, {
+            "schema_version": 1,
+            "kind": "github-docs-recursion-child-update",
+            "admitted_child": record["children"][0],
+            "state": "complete",
+            "documentation_branch": {
+                "branch": "gas-city/docs-recursion-default",
+                "commit_sha": SHA,
+                "evidence": ["commit:" + SHA],
+            },
+        })
+
+        assert action is not None
+        self.assertEqual(updated["children"][0]["state"], "complete")
+        self.assertEqual(updated["docs_prs_used"], 1)
+        self.assertEqual(action["kind"], "create_docs_pr")
+        self.assertEqual(action["branch"], "gas-city/docs-recursion-default")
+        self.assertEqual(action["base"], "main")
+
     def test_v3_adjacent_gap_records_a_bud_without_a_child_action(self) -> None:
         candidate = {
             "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
