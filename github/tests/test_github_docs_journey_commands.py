@@ -20,6 +20,28 @@ import github_intake_docs_direct_child_complete as direct_child
 SHA = "a" * 40
 
 
+def direct_patch_artifact() -> dict[str, object]:
+    """One bounded documentation-only patch against the admitted PR snapshot."""
+    diff = "diff --git a/docs/install.md b/docs/install.md\nindex 1111111..2222222 100644\n--- a/docs/install.md\n+++ b/docs/install.md\n@@ -1 +1 @@\n-old\n+new\n"
+    return {
+        "schema_version": 1,
+        "status": "proposed",
+        "generated_at": "2026-09-04T12:00:00Z",
+        "identity": {
+            "repository_id": "17", "repository": "allenday/demo", "pr_number": 9,
+            "base_sha": "b" * 40, "head_sha": SHA,
+            "head_repository_id": "17", "head_repository": "allenday/demo", "base_ref": "main",
+        },
+        "patch_sha256": hashlib.sha256(diff.encode()).hexdigest(),
+        "diff": diff,
+        "files": [{"path": "docs/install.md", "sha256": "c" * 64}],
+        "claims": [{"claim": "The install guide explains the new workflow.",
+                    "evidence": f"github://allenday/demo/blob/{SHA}/docs/install.md",
+                    "release_scope": "unreleased"}],
+        "checks": [{"command": "make docs-check", "status": "passed", "explanation": "Documentation checks passed."}],
+    }
+
+
 def direct_assignment() -> dict[str, object]:
     return {
         "schema_version": 1, "kind": "github-pr-docs-impact-assignment",
@@ -195,6 +217,33 @@ class DocsJourneyCommandTests(unittest.TestCase):
         self.assertEqual(stored["children"][0], admitted["admitted_child"])
 
     def test_direct_completion_consumes_exact_admission_and_replays_idempotently(self) -> None:
+        class Publisher:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def publish(self, admission: dict[str, object], review: dict[str, object]) -> dict[str, object]:
+                self.calls.append({"admission": admission, "review": review})
+                return {"branch": "gas-city/docs-9-0123456789ab", "commit_sha": SHA,
+                        "evidence": ["commit:" + SHA]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            admission = direct_child.admit_direct_child(directory, direct_payload(), now=100)
+            update = {
+                "schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
+                "admitted_child": admission["admitted_child"], "state": "complete",
+                "documentation_patch": direct_patch_artifact(),
+            }
+            publisher = Publisher()
+            first = direct_child.complete_direct_child(directory, {"admission": admission, "update": update}, publisher=publisher)
+            replay = direct_child.complete_direct_child(directory, {"admission": admission, "update": update}, publisher=publisher)
+
+        self.assertEqual(replay, first)
+        self.assertEqual(len(publisher.calls), 1)
+        self.assertEqual(publisher.calls[0]["review"]["proposal"]["patch_sha256"], update["documentation_patch"]["patch_sha256"])
+        self.assertEqual(first["action"]["kind"], "create_docs_pr")
+        self.assertEqual(first["action"]["base"], "feature/install")
+
+    def test_direct_completion_rejects_a_worker_branch_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             admission = direct_child.admit_direct_child(directory, direct_payload(), now=100)
             update = {
@@ -203,12 +252,26 @@ class DocsJourneyCommandTests(unittest.TestCase):
                 "documentation_branch": {"branch": "gas-city/direct-child", "commit_sha": SHA,
                                          "evidence": ["commit:" + SHA]},
             }
-            first = direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
-            replay = direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
+            with self.assertRaisesRegex(ValueError, "documentation_patch"):
+                direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
 
-        self.assertEqual(replay, first)
-        self.assertEqual(first["action"]["kind"], "create_docs_pr")
-        self.assertEqual(first["action"]["base"], "feature/install")
+    def test_direct_completion_rejects_a_patch_for_another_immutable_snapshot_before_publish(self) -> None:
+        class Publisher:
+            def publish(self, admission: dict[str, object], review: dict[str, object]) -> dict[str, object]:
+                self.fail("publisher must not receive an inapplicable patch")
+
+        with tempfile.TemporaryDirectory() as directory:
+            admission = direct_child.admit_direct_child(directory, direct_payload(), now=100)
+            patch = direct_patch_artifact()
+            patch["identity"] = {**patch["identity"], "head_sha": "c" * 40}
+            update = {"schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
+                      "admitted_child": admission["admitted_child"], "state": "complete",
+                      "documentation_patch": patch}
+            with self.assertRaisesRegex(ValueError, "immutable snapshot"):
+                direct_child.complete_direct_child(directory, {"admission": admission, "update": update}, publisher=Publisher())
+            stored = direct_child.FileJourneyStore(directory).load(admission["recursion_identity"])
+
+        self.assertEqual(stored["children"][0]["state"], "admitted")
 
     def test_direct_completion_rejects_partial_or_changed_child_and_bare_gas_city_branch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -226,7 +289,7 @@ class DocsJourneyCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             admission = direct_child.admit_direct_child(directory, direct_payload(), now=100)
             update = {"schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
-                      "admitted_child": admission["admitted_child"], "state": "blocked", "documentation_branch": None}
+                      "admitted_child": admission["admitted_child"], "state": "blocked", "documentation_patch": None}
             result = direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
 
         self.assertIsNone(result["action"])
@@ -242,8 +305,8 @@ class DocsJourneyCommandTests(unittest.TestCase):
                 admission = direct_child.admit_direct_child(directory, direct_payload(), now=100)
                 update = {"schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
                           "admitted_child": admission["admitted_child"], "state": state,
-                          "documentation_branch": branch}
-                with self.assertRaisesRegex(ValueError, "state.*branch|branch.*state"):
+                          "documentation_patch": branch}
+                with self.assertRaisesRegex(ValueError, "state.*documentation_patch|documentation_patch.*state"):
                     direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
                 stored = direct_child.FileJourneyStore(directory).load(admission["recursion_identity"])
                 self.assertEqual(stored["children"][0]["state"], "admitted")
@@ -270,7 +333,7 @@ class DocsJourneyCommandTests(unittest.TestCase):
             update = {
                 "schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
                 "admitted_child": child, "state": "complete",
-                "documentation_branch": {"branch": "gas-city/direct-child", "commit_sha": SHA, "evidence": ["commit:" + SHA]},
+                "documentation_patch": direct_patch_artifact(),
             }
             with self.assertRaisesRegex(ValueError, "Pack-issued admission"):
                 direct_child.complete_direct_child(directory, {"identity": journey["identity"], "update": update})
@@ -282,7 +345,7 @@ class DocsJourneyCommandTests(unittest.TestCase):
             admission = {"schema_version": 1, "kind": "github-docs-recursion-direct-admission",
                          "recursion_identity": journey["identity"], "admitted_child": child}
             update = {"schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
-                      "admitted_child": child, "state": "blocked", "documentation_branch": None}
+                      "admitted_child": child, "state": "blocked", "documentation_patch": None}
             with self.assertRaisesRegex(ValueError, "direct admission was not found"):
                 direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
 

@@ -205,6 +205,11 @@ class DocsJourneyFormulaTests(unittest.TestCase):
         self.assertIn("must never emit a\n`github-docs-journey-child-update`", prompt)
         self.assertNotIn('"kind":"github-docs-journey-child-update"', prompt)
 
+    def test_direct_agent_uses_the_vendored_techdocs_methodology(self) -> None:
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+
+        self.assertIn("skills/developer-experience-techdocs/SKILL.md", prompt)
+
     def test_direct_city_worker_persists_the_harvestable_result_before_closing(self) -> None:
         prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
         normalized = " ".join(prompt.lower().split())

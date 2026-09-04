@@ -13,6 +13,8 @@ import time
 from typing import Any
 
 import github_intake_common as common
+import github_intake_docs_impact as impact
+import github_intake_docs_patch as docs_patch
 import github_intake_docs_patch_worker as review_worker
 from github_docs_journey import FileJourneyStore, begin_journey, new_journey, record_child_update
 from github_intake_docs_journey_commands import _strict_json_object
@@ -31,6 +33,38 @@ DIRECT_BUDGETS = {
     "max_elapsed_seconds": 24 * 60 * 60,
     "max_non_progress": 3,
 }
+
+
+class GitHubDirectPatchPublisher:
+    """Materialize one validated worker patch with the GitHub App's authority."""
+
+    def __init__(self, app_config: dict[str, Any], installation_id: str) -> None:
+        self.gateway = impact.GitHubAppProjectionGateway(app_config, installation_id)
+
+    def publish(self, admission: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+        identity = review["identity"]
+        run = {"assignment": {"identity": identity}}
+        current = self.gateway.pull_request(run)
+        plan = impact.followup_pr_plan(current, review)
+        if plan is None:
+            raise ValueError("documentation patch no longer applies to the admitted pull request snapshot")
+        proposal = docs_patch.validate_agent_review(review)["proposal"]
+        if proposal is None:
+            raise ValueError("trusted publication requires a validated documentation patch")
+        marker = f"gas-city-docs-followup:{proposal['artifact_sha256']}"
+        branch, repository = plan["branch"], plan["repository"]
+        if self.gateway.branch_exists(repository, branch):
+            if not self.gateway.branch_matches(repository, branch, marker):
+                raise ValueError("derived App branch exists without the expected patch marker")
+            owner, repo = repository.split("/", 1)
+            token = common.create_installation_token(self.gateway.app_config, self.gateway.installation_id)
+            ref = common.github_api_request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}", bearer_token=token)
+            commit_sha = str((ref.get("object") or {}).get("sha") or "").lower()
+        else:
+            commit_sha = self.gateway.create_branch(repository, branch, plan["head_sha"], review, marker, lambda _: None)
+        if not self.gateway.branch_matches(repository, branch, marker, commit_sha):
+            raise ValueError("trusted App branch could not be verified after publication")
+        return {"branch": branch, "commit_sha": commit_sha, "evidence": [f"commit:{commit_sha}", f"patch:{proposal['artifact_sha256']}"]}
 
 
 def _canonical_json(value: Any) -> str:
@@ -139,7 +173,12 @@ def admit_direct_child(state_dir: str, payload: dict[str, Any], *, now: float | 
         if action.get("kind") != "create_issue" or action.get("child_key") != journey["children"][0]["key"]:
             raise ValueError("classified candidate did not produce one direct child intent")
         journey["actions"] = [item for item in journey["actions"] if item.get("id") != action.get("id")]
-        journey["direct_admission"] = {**expected_binding, "admitted_child": copy.deepcopy(journey["children"][0])}
+        journey["direct_admission"] = {
+            **expected_binding,
+            "proposal_identity": copy.deepcopy(assignment["evidence_bundle"]["proposal_identity"]),
+            "candidate_artifact": copy.deepcopy(candidate["artifact"]),
+            "admitted_child": copy.deepcopy(journey["children"][0]),
+        }
         stored = store.save(journey)
     return _admission_response(identity, stored["children"][0])
 
@@ -155,18 +194,34 @@ def _validate_admission(value: Any) -> dict[str, Any]:
 
 
 def _validate_direct_update(value: Any, admitted_child: dict[str, Any]) -> dict[str, Any]:
-    fields = {"schema_version", "kind", "admitted_child", "state", "documentation_branch"}
+    fields = {"schema_version", "kind", "admitted_child", "state", "documentation_patch"}
     if (not isinstance(value, dict) or set(value) != fields or value.get("schema_version") != 1
             or value.get("kind") != DIRECT_UPDATE_KIND or value.get("admitted_child") != admitted_child
             or value.get("state") not in {"complete", "blocked", "failed", "cancelled"}):
-        raise ValueError("direct child update must echo the complete admitted child")
-    state, branch = value["state"], value["documentation_branch"]
-    if (state == "complete") != (branch is not None):
-        raise ValueError("direct child state and documentation branch are inconsistent")
+        raise ValueError("direct child update must echo the complete admitted child and use documentation_patch")
+    state, patch = value["state"], value["documentation_patch"]
+    if (state == "complete") != (patch is not None):
+        raise ValueError("direct child state and documentation_patch are inconsistent")
     return value
 
 
-def complete_direct_child(state_dir: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _publication_review(binding: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Turn a worker artifact into the only review form the App may publish."""
+    artifact = docs_patch.validate_artifact(update["documentation_patch"])
+    if artifact["identity"] != binding.get("proposal_identity"):
+        raise ValueError("documentation_patch identity does not match the admitted immutable snapshot")
+    candidate_artifact = binding.get("candidate_artifact")
+    if not isinstance(candidate_artifact, dict):
+        raise ValueError("persisted direct admission has no classified candidate artifact")
+    review = docs_patch.validate_agent_review(candidate_artifact)
+    if review["verdict"] != "docs-change-required" or review["proposal"] is not None:
+        raise ValueError("persisted direct admission cannot publish this documentation patch")
+    publishable = {key: value for key, value in review.items() if key != "review_sha256"}
+    publishable.update({"verdict": "proposal-ready", "proposal": artifact})
+    return docs_patch.validate_agent_review(publishable)
+
+
+def complete_direct_child(state_dir: str, payload: dict[str, Any], *, publisher: Any | None = None) -> dict[str, Any]:
     """Validate and persist one direct-child result, then stage its App PR."""
     if set(payload) == {"admission", "update"}:
         admission = _validate_admission(payload["admission"])
@@ -190,6 +245,14 @@ def complete_direct_child(state_dir: str, payload: dict[str, Any]) -> dict[str, 
                 action = next((item for item in journey["actions"] if item.get("child_key") == child.get("key") and item.get("kind") == "create_docs_pr"), None)
                 return {"journey": journey, "action": copy.deepcopy(action)}
             forwarded = copy.deepcopy(update)
+            if update["state"] == "complete":
+                if publisher is None or not callable(getattr(publisher, "publish", None)):
+                    raise ValueError("complete direct child requires a trusted documentation patch publisher")
+                review = _publication_review(binding, update)
+                published = publisher.publish(admission, review)
+                if not isinstance(published, dict) or set(published) != {"branch", "commit_sha", "evidence"}:
+                    raise ValueError("trusted documentation patch publisher returned an invalid branch result")
+                forwarded["documentation_branch"] = published
             forwarded["kind"] = "github-docs-recursion-child-update"
             updated, action = record_child_update(journey, forwarded)
             updated_child = next((item for item in updated["children"] if item.get("identity") == child.get("identity")), None)
@@ -201,6 +264,21 @@ def complete_direct_child(state_dir: str, payload: dict[str, Any]) -> dict[str, 
     raise ValueError("direct completion requires the exact Pack-issued admission and update")
 
 
+def configured_publisher(state_dir: str, admission: dict[str, Any]) -> GitHubDirectPatchPublisher:
+    """Bind the App publisher to the installation persisted at direct admission."""
+    journey = FileJourneyStore(state_dir).load(admission["recursion_identity"])
+    binding = journey.get("direct_admission") if isinstance(journey, dict) else None
+    context = binding.get("context") if isinstance(binding, dict) else None
+    installation_id = context.get("installation_id") if isinstance(context, dict) else None
+    if not isinstance(installation_id, str) or not installation_id:
+        raise ValueError("persisted direct admission has no GitHub installation binding")
+    config = common.load_effective_config()
+    app_config = config.get("app") if isinstance(config, dict) else None
+    if not isinstance(app_config, dict):
+        raise ValueError("trusted documentation patch publication requires GitHub App configuration")
+    return GitHubDirectPatchPublisher(app_config, installation_id)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", required=True)
@@ -208,7 +286,12 @@ def main() -> int:
     parser.add_argument("--input", required=True)
     args = parser.parse_args()
     try:
-        print(json.dumps(complete_direct_child(args.store, _strict_json_object(args.input)), sort_keys=True, separators=(",", ":")))
+        payload = _strict_json_object(args.input)
+        admission = _validate_admission(payload.get("admission")) if isinstance(payload, dict) else None
+        print(json.dumps(
+            complete_direct_child(args.store, payload, publisher=configured_publisher(args.store, admission)),
+            sort_keys=True, separators=(",", ":"),
+        ))
     except (OSError, ValueError, RuntimeError, common.GitHubAPIError) as exc:
         parser.error(str(exc))
     return 0
