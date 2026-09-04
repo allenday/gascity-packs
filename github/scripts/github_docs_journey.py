@@ -965,8 +965,26 @@ class GitHubCityBootstrapAdapter:
             raise ValueError("create_docs_pr requires a named App-owned gas-city/ branch")
         owner, repo = _repository_parts(root)
         token = common.create_installation_token(self.app_config, str(_installation_id(root)))
+        expected_base = str(action.get("base") or (root["context"]["default_branch"] if root.get("schema_version") == 3 else root["default_branch"]))
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
+            if root.get("schema_version") in {2, 3}:
+                expected_sha = _sha(action.get("commit_sha"), "documentation branch commit_sha")
+                pull = existing
+                head, base = pull.get("head"), pull.get("base")
+                if (not isinstance(head, dict) or not head.get("ref") or not head.get("sha")
+                        or not isinstance(base, dict) or not base.get("ref")):
+                    number = pull.get("number")
+                    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                        raise ValueError("existing documentation PR lacks immutable provenance")
+                    pull = common.github_api_request(
+                        "GET", f"/repos/{owner}/{repo}/pulls/{number}", bearer_token=token,
+                    )
+                    head, base = pull.get("head"), pull.get("base")
+                if (not isinstance(head, dict) or head.get("ref") != branch
+                        or str(head.get("sha") or "").lower() != expected_sha
+                        or not isinstance(base, dict) or base.get("ref") != expected_base):
+                    raise ValueError("existing documentation PR does not match immutable provenance")
             return existing
         if root.get("schema_version") in {2, 3}:
             commit_sha = _sha(action.get("commit_sha"), "documentation branch commit_sha")
@@ -978,7 +996,7 @@ class GitHubCityBootstrapAdapter:
             if str((ref.get("object") or {}).get("sha") or "").lower() != commit_sha:
                 raise ValueError("documentation branch does not match the admitted immutable commit")
         title = str(action.get("title") or f"{_run_label(root)} follow-up")
-        base = str(action.get("base") or (root["context"]["default_branch"] if root.get("schema_version") == 3 else root["default_branch"]))
+        base = expected_base
         body = str(action.get("body") or f"App-owned {_run_label(root).lower()} follow-up.")
         return common.create_pull_request(
             self.app_config, str(_installation_id(root)), owner, repo, title, branch, base,

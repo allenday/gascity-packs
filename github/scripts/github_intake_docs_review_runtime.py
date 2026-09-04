@@ -247,7 +247,10 @@ def accept_candidate(store: FileDocsReviewStore, envelope: dict[str, Any], adapt
             store.save(record)
             _perform(store, adapter, record)
             return {"accepted": False, "reason": "legacy record cannot validate candidate"}
-        normalized = worker.validate_final_candidate(_proven_assignment_bytes(record), envelope)
+        if isinstance(envelope, dict) and envelope.get("schema_version") == 2:
+            normalized = worker.validate_direct_admission_candidate(_proven_assignment_bytes(record), envelope)
+        else:
+            normalized = worker.validate_final_candidate(_proven_assignment_bytes(record), envelope)
         store.audit_candidate(identity, normalized, now)
         if record["state"] in {"terminal", "stale"} or "candidate" in record:
             transition = reconcile(_model(record), now=now, head_is_current=adapter.head_is_current(copy.deepcopy(record)))

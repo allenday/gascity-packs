@@ -15,7 +15,9 @@ SHA, source branch, source URL, and installation id. The Pack cross-checks every
 duplicated identity field, persists the single recursion before returning, and
 returns its full `recursion_identity` plus the complete `admitted_child` record.
 Persist that response unchanged. Do not construct a recursion identity, child
-key, budget, classification, or provenance in the caller.
+key, budget, classification, or provenance in the caller. The persisted direct
+child has no City projection intent: the caller dispatches exactly this child
+record once, while any deferred coverage buds remain ordinary issue intents.
 """
 
 [[steps]]
@@ -26,8 +28,9 @@ description = """
 Invoke `scripts/github_intake_docs_direct_child_complete.py --once --input
 <strict-json>` with exactly the unchanged Pack-issued `admission` and a
 `github-docs-recursion-direct-child-update`. The update must echo the complete
-admitted child record and may contain only one gas-city branch, immutable
-40-character commit SHA, and non-empty evidence. The Pack controller persists
+admitted child record. A `complete` result must contain exactly one named
+gas-city branch, immutable 40-character commit SHA, and non-empty evidence;
+`blocked`, `failed`, and `cancelled` results must contain a null branch. The Pack controller persists
 the result transactionally, makes an exact replay idempotent, rejects a changed
 replay, and is the only publisher of the resulting follow-up PR.
 """

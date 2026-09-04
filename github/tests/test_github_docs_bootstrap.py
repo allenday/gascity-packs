@@ -164,12 +164,12 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(create.call_args.args[6], "feature/install")
 
     def test_app_projection_adopts_the_existing_direct_child_pr_on_replay(self) -> None:
-        root = {"schema_version": 3, "context": {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91"}}
-        action = {"id": "direct-pr", "branch": "gas-city/install", "commit_sha": SHA}
+        root = {"schema_version": 3, "context": {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91", "default_branch": "feature/install"}}
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install", "commit_sha": SHA}
         adapter = object.__new__(GitHubCityBootstrapAdapter)
         adapter.app_config = {"slug": "gas-city"}
         adapter.app_login = "gas-city[bot]"
-        existing = {"number": 10, "head": {"ref": "gas-city/install"}}
+        existing = {"number": 10, "head": {"ref": "gas-city/install", "sha": SHA}, "base": {"ref": "feature/install"}}
         with mock.patch("github_docs_journey.common.create_installation_token", return_value="token"), mock.patch(
             "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=existing,
         ), mock.patch("github_docs_journey.common.github_api_request") as ref, mock.patch(
@@ -178,6 +178,26 @@ class DocsBootstrapTests(unittest.TestCase):
             self.assertEqual(adapter.create_docs_pr(root, action, None), existing)
         ref.assert_not_called()
         create.assert_not_called()
+
+    def test_app_projection_rejects_an_adopted_pr_with_changed_provenance(self) -> None:
+        root = {"schema_version": 3, "context": {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91", "default_branch": "feature/install"}}
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install", "commit_sha": SHA}
+        invalids = [
+            {"number": 10, "head": {"ref": "gas-city/other", "sha": SHA}, "base": {"ref": "feature/install"}},
+            {"number": 10, "head": {"ref": "gas-city/install", "sha": "b" * 40}, "base": {"ref": "feature/install"}},
+            {"number": 10, "head": {"ref": "gas-city/install", "sha": SHA}, "base": {"ref": "main"}},
+        ]
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}; adapter.app_login = "gas-city[bot]"
+        for existing in invalids:
+            with self.subTest(existing=existing), mock.patch(
+                "github_docs_journey.common.create_installation_token", return_value="token"
+            ), mock.patch(
+                "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=existing
+            ), mock.patch("github_docs_journey.common.create_pull_request") as create:
+                with self.assertRaisesRegex(ValueError, "immutable provenance"):
+                    adapter.create_docs_pr(root, action, None)
+                create.assert_not_called()
 
     def test_new_records_normalize_each_context_kind_to_the_single_recursion_contract(self) -> None:
         path = {

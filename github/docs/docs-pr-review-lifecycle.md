@@ -61,6 +61,11 @@ python3 github/scripts/github_intake_docs_review_commands.py \
   --actions-file <actions.json>
 ```
 
+The candidate command accepts the trusted bridge's schema-v2 classified
+candidate unchanged for lifecycle publication. Direct admission separately
+consumes those same assignment-bound bytes and candidate; schema-v1 review
+candidates are never upgraded by guessing persona or coverage provenance.
+
 With `action-file` projection, the command records action intents; the
 installation chooses how to consume them and how to provide the trusted
 projection adapter.

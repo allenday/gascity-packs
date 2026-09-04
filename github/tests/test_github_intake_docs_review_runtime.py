@@ -184,6 +184,31 @@ class DocsReviewRuntimeTests(unittest.TestCase):
         self.assertEqual(self.store.load(run["identity"])["conclusion"], "action_required")
         self.assertEqual(self.adapter.actions, [("ensure_terminal_check", run["identity"])])
 
+    def test_runtime_accepts_and_preserves_the_trusted_v2_direct_admission_candidate(self) -> None:
+        source = assignment()
+        run = runtime.intake_delivery(self.store, source, self.adapter, now=100)
+        envelope = candidate(source, "docs-change-required")
+        envelope.update({
+            "schema_version": 2,
+            "persona_goal_path": {
+                "domain": "techdocs", "role": "developer", "job": "use the interface",
+                "starting_context": "a checkout", "success_condition": "the interface works",
+                "documentation_entry_point": "README.md",
+            },
+            "coverage_cells": [{
+                "identity": "developer:use-interface:how-to", "classification": "unmet",
+                "evidence_paths": ["docs/guide.md"],
+            }],
+        })
+
+        accepted = runtime.accept_candidate(self.store, envelope, self.adapter, now=101)
+
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(self.store.load(run["identity"])["candidate"], envelope | {
+            "artifact": accepted["run"]["candidate"]["artifact"],
+        })
+        self.assertEqual(accepted["run"]["candidate"]["schema_version"], 2)
+
     def test_deadline_completes_an_operational_failure_once(self) -> None:
         run = runtime.intake_delivery(self.store, assignment(), self.adapter, now=100, deadline_seconds=60)
         self.adapter.actions.clear()

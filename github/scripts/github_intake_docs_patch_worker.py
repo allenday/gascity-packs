@@ -162,12 +162,13 @@ def _adapter_environment() -> dict[str, str]:
 
 
 def run_adapter(
-    assignment: dict[str, Any],
+    raw_assignment: bytes,
     adapter_command: str,
     skill_dir: pathlib.Path,
     timeout_seconds: float = 300.0,
 ) -> dict[str, Any] | None:
     """Return a completed adapter review, or None without inventing a result."""
+    assignment = load_assignment_bytes(raw_assignment)
     argv = _adapter_argv(adapter_command)
     if argv is None or timeout_seconds <= 0 or not (skill_dir / "SKILL.md").is_file():
         return None
@@ -189,9 +190,21 @@ def run_adapter(
     if result.returncode != 0 or not result.stdout or len(result.stdout.encode("utf-8")) > MAX_ADAPTER_OUTPUT_BYTES:
         return None
     try:
-        candidate = json.loads(result.stdout)
-        review = docs_patch.validate_review_decision(candidate)
+        output = json.loads(result.stdout)
     except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if isinstance(output, dict) and set(output) == {"artifact", "persona_goal_path", "coverage_cells"}:
+        try:
+            return validate_direct_admission_candidate(raw_assignment, {
+                "schema_version": 2,
+                "snapshot_sha256": hashlib.sha256(raw_assignment).hexdigest(),
+                **output,
+            })
+        except (TypeError, ValueError):
+            return None
+    try:
+        review = docs_patch.validate_review_decision(output)
+    except (TypeError, ValueError):
         return None
     if review["identity"] != assignment["identity"] or review["agent_skill"] != assignment["agent_skill"]:
         return None
@@ -206,8 +219,7 @@ def review_assignment_bytes(
     skill_dir: pathlib.Path,
     timeout_seconds: float = 300.0,
 ) -> dict[str, Any] | None:
-    assignment = load_assignment_bytes(raw)
-    return run_adapter(assignment, adapter_command, skill_dir, timeout_seconds)
+    return run_adapter(raw, adapter_command, skill_dir, timeout_seconds)
 
 
 def validate_final_candidate(raw_assignment: bytes, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -348,7 +360,9 @@ def main() -> int:
         if review is None:
             print(docs_patch.canonical_json({"status": "unavailable"}))
             return 0
-        if review["verdict"] != "proposal-ready":
+        if review.get("schema_version") == 2:
+            candidate = validate_direct_admission_candidate(raw_assignment, review)
+        elif review["verdict"] != "proposal-ready":
             candidate = validate_final_candidate(raw_assignment, {"schema_version": 1, "snapshot_sha256": hashlib.sha256(raw_assignment).hexdigest(), "artifact": review})
         elif not args.workspace or not args.generated_at:
             print(docs_patch.canonical_json({"status": "unavailable"}))

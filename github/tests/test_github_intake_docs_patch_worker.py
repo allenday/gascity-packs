@@ -101,6 +101,29 @@ class DocsPatchWorkerTests(unittest.TestCase):
             candidate = json.loads(artifact.read_text(encoding="utf-8"))
             self.assertEqual(candidate["artifact"]["verdict"], "docs-sufficient")
             self.assertEqual(json.loads(result.stdout)["review_sha256"], candidate["artifact"]["review_sha256"])
+
+    def test_worker_cli_binds_classified_reviewer_output_into_a_v2_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            raw = json.dumps(assignment(), separators=(",", ":")).encode()
+            assignment_file, artifact = root / "assignment.json", root / "artifact.json"
+            assignment_file.write_bytes(raw)
+            skill = root / "skill"; skill.mkdir(); (skill / "SKILL.md").write_text("skill", encoding="utf-8")
+            adapter = root / "adapter.py"
+            adapter.write_text(textwrap.dedent("""\
+                import json, sys
+                assignment = json.load(sys.stdin)
+                h = assignment['identity']['head_sha']
+                review = {'schema_version': 1, 'kind': 'github-pr-docs-impact-review', 'identity': assignment['identity'], 'agent_skill': assignment['agent_skill'], 'verdict': 'docs-change-required', 'rationale': 'The guide is incomplete.', 'evidence': [{'path': 'docs/guide.md', 'evidence': 'github://' + assignment['identity']['repository'] + '/blob/' + h + '/docs/guide.md'}], 'confidence': 0.9, 'proposal': None}
+                json.dump({'artifact': review, 'persona_goal_path': {'domain': 'techdocs', 'role': 'developer', 'job': 'use the interface', 'starting_context': 'a checkout', 'success_condition': 'the interface works', 'documentation_entry_point': 'README.md'}, 'coverage_cells': [{'identity': 'developer:use-interface:how-to', 'classification': 'unmet', 'evidence_paths': ['docs/guide.md']}]}, sys.stdout)
+            """), encoding="utf-8")
+            result = subprocess.run([sys.executable, str(pathlib.Path(worker.__file__)), "--assignment-file", str(assignment_file), "--artifact-file", str(artifact), "--adapter-command", shlex.join([sys.executable, str(adapter)]), "--skill-dir", str(skill)], text=True, capture_output=True, check=False)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            candidate = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertEqual(candidate["schema_version"], 2)
+            self.assertEqual(candidate["snapshot_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(candidate["coverage_cells"][0]["classification"], "unmet")
     def test_final_candidate_accepts_canonical_non_proposal_reviews(self) -> None:
         from github.tests.test_github_intake_docs_patch import review
         raw = json.dumps(assignment()).encode()

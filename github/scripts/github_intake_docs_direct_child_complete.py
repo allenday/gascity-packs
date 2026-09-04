@@ -133,6 +133,12 @@ def admit_direct_child(state_dir: str, payload: dict[str, Any], *, now: float | 
         if (journey is None or journey.get("state") != "active" or not isinstance(journey.get("children"), list)
                 or len(journey["children"]) != 1 or not isinstance(action, dict)):
             raise ValueError("classified candidate did not admit exactly one direct child")
+        # Compose dispatches the admitted child returned below.  Persisting the
+        # generic create_issue intent would make the App projection create a
+        # second City work item for that same child.
+        if action.get("kind") != "create_issue" or action.get("child_key") != journey["children"][0]["key"]:
+            raise ValueError("classified candidate did not produce one direct child intent")
+        journey["actions"] = [item for item in journey["actions"] if item.get("id") != action.get("id")]
         journey["direct_admission"] = {**expected_binding, "admitted_child": copy.deepcopy(journey["children"][0])}
         stored = store.save(journey)
     return _admission_response(identity, stored["children"][0])
@@ -154,6 +160,9 @@ def _validate_direct_update(value: Any, admitted_child: dict[str, Any]) -> dict[
             or value.get("kind") != DIRECT_UPDATE_KIND or value.get("admitted_child") != admitted_child
             or value.get("state") not in {"complete", "blocked", "failed", "cancelled"}):
         raise ValueError("direct child update must echo the complete admitted child")
+    state, branch = value["state"], value["documentation_branch"]
+    if (state == "complete") != (branch is not None):
+        raise ValueError("direct child state and documentation branch are inconsistent")
     return value
 
 

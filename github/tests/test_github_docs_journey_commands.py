@@ -148,6 +148,17 @@ class DocsJourneyCommandTests(unittest.TestCase):
         self.assertEqual(child["context"]["source_branch"], "feature/install")
         self.assertEqual(child["context"]["default_branch"], "feature/install")
 
+    def test_direct_admission_has_no_projectable_city_work_for_the_dispatched_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            admitted = direct_child.admit_direct_child(directory, direct_payload(), now=100)
+            stored = direct_child.FileJourneyStore(directory).load(admitted["recursion_identity"])
+
+        self.assertFalse(any(
+            action.get("child_key") == admitted["admitted_child"]["key"]
+            and action.get("kind") in {"create_issue", "create_bead", "assign_bead"}
+            for action in stored["actions"]
+        ))
+
     def test_direct_admission_cli_returns_the_persisted_pack_record(self) -> None:
         script = pathlib.Path(direct_child.__file__).with_name("github_intake_docs_direct_child_admit.py")
         with tempfile.TemporaryDirectory() as directory:
@@ -220,6 +231,22 @@ class DocsJourneyCommandTests(unittest.TestCase):
 
         self.assertIsNone(result["action"])
         self.assertEqual(result["journey"]["children"][0]["state"], "blocked")
+
+    def test_direct_completion_enforces_terminal_state_branch_pairs_before_persistence(self) -> None:
+        invalid_pairs = [("complete", None)] + [
+            (state, {"branch": "gas-city/direct-child", "commit_sha": SHA, "evidence": ["commit:" + SHA]})
+            for state in ("blocked", "failed", "cancelled")
+        ]
+        for state, branch in invalid_pairs:
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                admission = direct_child.admit_direct_child(directory, direct_payload(), now=100)
+                update = {"schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
+                          "admitted_child": admission["admitted_child"], "state": state,
+                          "documentation_branch": branch}
+                with self.assertRaisesRegex(ValueError, "state.*branch|branch.*state"):
+                    direct_child.complete_direct_child(directory, {"admission": admission, "update": update})
+                stored = direct_child.FileJourneyStore(directory).load(admission["recursion_identity"])
+                self.assertEqual(stored["children"][0]["state"], "admitted")
 
     def test_direct_completion_rejects_the_superseded_identity_update_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
