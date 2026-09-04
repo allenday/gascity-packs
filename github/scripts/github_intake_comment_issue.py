@@ -34,6 +34,14 @@ def split_repository(value: str) -> tuple[str, str]:
 
 
 def read_body(args: argparse.Namespace) -> str:
+    if args.body_json:
+        try:
+            payload = json.loads(args.body_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("--body-json must be a JSON object") from exc
+        if not isinstance(payload, dict) or set(payload) != {"body"} or not isinstance(payload["body"], str):
+            raise ValueError("--body-json must be an object with one string body field")
+        return payload["body"]
     if args.body_file:
         with open(args.body_file, "r", encoding="utf-8") as handle:
             return handle.read()
@@ -55,6 +63,7 @@ def main() -> int:
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--body", default="", help="comment markdown")
+    group.add_argument("--body-json", default="", help="JSON object containing the comment body")
     group.add_argument("--body-file", default="", help="path to a markdown file")
     group.add_argument("--body-stdin", action="store_true", help="read comment markdown from standard input")
     args = parser.parse_args()

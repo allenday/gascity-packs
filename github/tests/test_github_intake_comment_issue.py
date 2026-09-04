@@ -12,6 +12,18 @@ import github_intake_comment_issue as comment_issue
 
 
 class GitHubIntakeCommentIssueTests(unittest.TestCase):
+    def test_main_dry_run_accepts_a_json_comment_body(self) -> None:
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", [
+            "github_intake_comment_issue.py", "owner/repo", "42", "--body-json", '{"body":"ack"}', "--dry-run",
+        ]), mock.patch.object(comment_issue.common, "load_effective_config") as config, mock.patch.object(
+            comment_issue.common, "post_issue_comment",
+        ) as post, mock.patch.object(sys, "stdout", output):
+            self.assertEqual(comment_issue.main(), 0)
+        self.assertEqual(json.loads(output.getvalue())["body"], "ack")
+        config.assert_not_called()
+        post.assert_not_called()
+
     def test_main_dry_run_prints_request_without_loading_app_or_posting(self) -> None:
         output = io.StringIO()
         with mock.patch.object(sys, "argv", [
