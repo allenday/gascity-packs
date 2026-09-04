@@ -26,8 +26,9 @@ title = "Validate and publish an admitted child result"
 needs = ["admit-direct-child"]
 description = """
 Dispatch the Pack's dedicated `docs-recursion-direct-child` City worker with
-the admitted child stored under `github.docs_direct_child` Bead metadata. The
-worker must use the controller-supplied immutable snapshot, make only
+the admitted child stored under `github.docs_direct_child` and the complete
+Pack-issued patch context under `github.docs_direct_child.patch_context` Bead
+metadata. The worker must echo both records exactly, use the controller-supplied immutable snapshot, make only
 documentation edits in a disposable copy, and generate its diff with Git. It
 must persist a `github-docs-recursion-direct-child-update` containing the
 resulting complete `documentation_patch` artifact under the exact

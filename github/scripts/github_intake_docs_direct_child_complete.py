@@ -54,16 +54,15 @@ class GitHubDirectPatchPublisher:
         marker = f"gas-city-docs-followup:{proposal['artifact_sha256']}"
         branch, repository = plan["branch"], plan["repository"]
         if self.gateway.branch_exists(repository, branch):
-            if not self.gateway.branch_matches(repository, branch, marker):
-                raise ValueError("derived App branch exists without the expected patch marker")
-            owner, repo = repository.split("/", 1)
-            token = common.create_installation_token(self.gateway.app_config, self.gateway.installation_id)
-            ref = common.github_api_request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}", bearer_token=token)
-            commit_sha = str((ref.get("object") or {}).get("sha") or "").lower()
-        else:
-            commit_sha = self.gateway.create_branch(repository, branch, plan["head_sha"], review, marker, lambda _: None)
+            # This boundary has no durable remote branch adoption record.  A
+            # marker on a predictable ref is not authority, so fail closed
+            # instead of treating an arbitrary pre-existing ref as ours.
+            raise ValueError("derived App branch already exists; refusing untrusted adoption")
+        commit_sha = self.gateway.create_branch(repository, branch, plan["head_sha"], review, marker, lambda _: None)
         if not self.gateway.branch_matches(repository, branch, marker, commit_sha):
             raise ValueError("trusted App branch could not be verified after publication")
+        if impact.followup_pr_plan(self.gateway.pull_request(run), review) is None:
+            raise ValueError("source pull request changed before publication completed")
         return {"branch": branch, "commit_sha": commit_sha, "evidence": [f"commit:{commit_sha}", f"patch:{proposal['artifact_sha256']}"]}
 
 
@@ -98,12 +97,22 @@ def _direct_context(value: Any, assignment: dict[str, Any], candidate: dict[str,
     return dict(value)
 
 
-def _admission_response(identity: str, child: dict[str, Any]) -> dict[str, Any]:
+def _patch_context(proposal_identity: dict[str, Any]) -> dict[str, Any]:
+    """The worker-safe immutable fields needed to build a valid patch artifact."""
+    return {
+        "schema_version": 1,
+        "kind": "github-docs-recursion-direct-patch-context",
+        "proposal_identity": copy.deepcopy(proposal_identity),
+    }
+
+
+def _admission_response(identity: str, child: dict[str, Any], patch_context: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "kind": DIRECT_ADMISSION_KIND,
         "recursion_identity": identity,
         "admitted_child": copy.deepcopy(child),
+        "patch_context": copy.deepcopy(patch_context),
     }
 
 
@@ -162,7 +171,10 @@ def admit_direct_child(state_dir: str, payload: dict[str, Any], *, now: float | 
             admitted_child = recorded_admission.get("admitted_child")
             if not isinstance(admitted_child, dict):
                 raise ValueError("persisted direct admission has no exact admitted child")
-            return _admission_response(identity, admitted_child)
+            patch_context = recorded_admission.get("patch_context")
+            if not isinstance(patch_context, dict):
+                raise ValueError("persisted direct admission has no worker-safe patch context")
+            return _admission_response(identity, admitted_child, patch_context)
         journey, action = begin_journey(request, decision, time.time() if now is None else now)
         if (journey is None or journey.get("state") != "active" or not isinstance(journey.get("children"), list)
                 or len(journey["children"]) != 1 or not isinstance(action, dict)):
@@ -173,32 +185,36 @@ def admit_direct_child(state_dir: str, payload: dict[str, Any], *, now: float | 
         if action.get("kind") != "create_issue" or action.get("child_key") != journey["children"][0]["key"]:
             raise ValueError("classified candidate did not produce one direct child intent")
         journey["actions"] = [item for item in journey["actions"] if item.get("id") != action.get("id")]
+        patch_context = _patch_context(assignment["evidence_bundle"]["proposal_identity"])
         journey["direct_admission"] = {
             **expected_binding,
             "proposal_identity": copy.deepcopy(assignment["evidence_bundle"]["proposal_identity"]),
+            "patch_context": patch_context,
             "candidate_artifact": copy.deepcopy(candidate["artifact"]),
             "admitted_child": copy.deepcopy(journey["children"][0]),
         }
         stored = store.save(journey)
-    return _admission_response(identity, stored["children"][0])
+    return _admission_response(identity, stored["children"][0], patch_context)
 
 
 def _validate_admission(value: Any) -> dict[str, Any]:
     if (not isinstance(value, dict)
-            or set(value) != {"schema_version", "kind", "recursion_identity", "admitted_child"}
+            or set(value) != {"schema_version", "kind", "recursion_identity", "admitted_child", "patch_context"}
             or value.get("schema_version") != 1 or value.get("kind") != DIRECT_ADMISSION_KIND
             or not isinstance(value.get("recursion_identity"), str) or not value["recursion_identity"]
-            or not isinstance(value.get("admitted_child"), dict)):
+            or not isinstance(value.get("admitted_child"), dict)
+            or not isinstance(value.get("patch_context"), dict)):
         raise ValueError("completion requires the exact Pack-issued admission record")
     return value
 
 
-def _validate_direct_update(value: Any, admitted_child: dict[str, Any]) -> dict[str, Any]:
-    fields = {"schema_version", "kind", "admitted_child", "state", "documentation_patch"}
+def _validate_direct_update(value: Any, admitted_child: dict[str, Any], patch_context: dict[str, Any]) -> dict[str, Any]:
+    fields = {"schema_version", "kind", "admitted_child", "state", "patch_context", "documentation_patch"}
     if (not isinstance(value, dict) or set(value) != fields or value.get("schema_version") != 1
             or value.get("kind") != DIRECT_UPDATE_KIND or value.get("admitted_child") != admitted_child
+            or value.get("patch_context") != patch_context
             or value.get("state") not in {"complete", "blocked", "failed", "cancelled"}):
-        raise ValueError("direct child update must echo the complete admitted child and use documentation_patch")
+        raise ValueError("direct child update must echo the complete admitted child, patch context, and use documentation_patch")
     state, patch = value["state"], value["documentation_patch"]
     if (state == "complete") != (patch is not None):
         raise ValueError("direct child state and documentation_patch are inconsistent")
@@ -225,7 +241,7 @@ def complete_direct_child(state_dir: str, payload: dict[str, Any], *, publisher:
     """Validate and persist one direct-child result, then stage its App PR."""
     if set(payload) == {"admission", "update"}:
         admission = _validate_admission(payload["admission"])
-        update = _validate_direct_update(payload["update"], admission["admitted_child"])
+        update = _validate_direct_update(payload["update"], admission["admitted_child"], admission["patch_context"])
         identity = admission["recursion_identity"]
         store = FileJourneyStore(state_dir)
         with store.lock(identity):
@@ -235,6 +251,8 @@ def complete_direct_child(state_dir: str, payload: dict[str, Any], *, publisher:
             binding = journey["direct_admission"]
             if binding.get("admitted_child") != admission["admitted_child"]:
                 raise ValueError("completion admission does not match the persisted direct child")
+            if binding.get("patch_context") != admission["patch_context"]:
+                raise ValueError("completion admission does not match the persisted patch context")
             child = next((item for item in journey["children"] if item.get("identity") == admission["admitted_child"].get("identity")), None)
             if child is None:
                 raise ValueError("completion admission does not match the persisted direct child")

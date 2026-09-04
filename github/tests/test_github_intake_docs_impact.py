@@ -46,6 +46,18 @@ def pull_request(*, head_repository: str = "allenday/demo", head_repository_id: 
 
 
 class DocsImpactProjectionTests(unittest.TestCase):
+    def test_materialized_patch_files_must_match_the_declared_content_digests(self) -> None:
+        proposal = review()["proposal"]
+        proposal["files"][0]["sha256"] = hashlib.sha256(b"New guidance.\n").hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = pathlib.Path(directory)
+            (checkout / "docs").mkdir()
+            (checkout / "docs" / "guide.md").write_text("New guidance.\n", encoding="utf-8")
+            impact.verify_materialized_patch_files(checkout, proposal)
+            (checkout / "docs" / "guide.md").write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "sha256"):
+                impact.verify_materialized_patch_files(checkout, proposal)
+
     def test_valid_same_repository_review_gets_an_app_owned_stacked_plan(self) -> None:
         plan = impact.followup_pr_plan(pull_request(), review())
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -18,6 +19,20 @@ from typing import Any, Callable, Protocol
 
 import github_intake_common as common
 import github_intake_docs_patch as docs_patch
+
+
+def verify_materialized_patch_files(checkout: pathlib.Path, proposal: dict[str, Any]) -> None:
+    """Require the applied worktree bytes to match every declared patch file."""
+    root = checkout.resolve()
+    for item in proposal["files"]:
+        path = root / str(item["path"])
+        try:
+            path.resolve().relative_to(root)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"could not verify materialized documentation file {item['path']!r}") from exc
+        if digest != item["sha256"]:
+            raise ValueError(f"materialized documentation file sha256 does not match {item['path']!r}")
 
 
 def _text(value: Any) -> str:
@@ -342,6 +357,7 @@ class GitHubAppProjectionGateway:
             self._git(checkout, "apply", "--check", str(patch), env=git_env)
             self._git(checkout, "apply", str(patch), env=git_env)
             patch.unlink()
+            verify_materialized_patch_files(checkout, proposal)
             self._git(checkout, "checkout", "-b", branch, env=git_env)
             self._git(checkout, "config", "user.name", "Gas City", env=git_env)
             self._git(checkout, "config", "user.email", "gas-city[bot]@users.noreply.github.com", env=git_env)

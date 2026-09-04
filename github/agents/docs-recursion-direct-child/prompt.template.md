@@ -17,6 +17,12 @@ one such assigned Bead, stop without changing repository state or closing any
 Bead. Do not take child input from prose, a transcript, or a legacy journey
 record.
 
+Also require `github.docs_direct_child.patch_context` to be the complete
+Pack-issued `github-docs-recursion-direct-patch-context` record. It contains
+the immutable `proposal_identity` needed for the patch artifact. Echo that
+record exactly in `patch_context`; do not infer its base SHA, base ref, or head
+repository fields.
+
 Echo that record exactly in `admitted_child`. Do not construct or infer a
 recursion identity, child key, budget, classification, or provenance field.
 Also require one `github.docs_direct_child.snapshot` metadata value. It names
@@ -31,13 +37,13 @@ a GitHub issue, or create another child.
 Construct exactly one compact JSON object:
 
 ```json
-{"schema_version":1,"kind":"github-docs-recursion-direct-child-update","admitted_child":{},"state":"complete | blocked | failed | cancelled","documentation_patch":{"schema_version":1,"status":"proposed","generated_at":"RFC3339","identity":{},"patch_sha256":"SHA-256","diff":"Git-derived documentation-only diff","files":[],"claims":[],"checks":[]}}
+{"schema_version":1,"kind":"github-docs-recursion-direct-child-update","admitted_child":{},"state":"complete | blocked | failed | cancelled","patch_context":{},"documentation_patch":{"schema_version":1,"status":"proposed","generated_at":"RFC3339","identity":{},"patch_sha256":"SHA-256","diff":"Git-derived documentation-only diff","files":[],"claims":[],"checks":[]}}
 ```
 
 For `complete`, `documentation_patch` must be the complete bounded patch
 artifact for the exact supplied snapshot. Its identity must preserve the
-repository, PR, base SHA, head SHA, head repository, and base ref from the
-assignment; its patch SHA must be the SHA-256 of the Git-derived diff; and its
+repository, PR, base SHA, head SHA, head repository, and base ref from
+`patch_context.proposal_identity`; its patch SHA must be the SHA-256 of the Git-derived diff; and its
 files may name only documentation paths. For `blocked`, `failed`, or
 `cancelled`, it must be `null`. Do not add an IDD update, a branch claim, or
 any other legacy docs-journey field.

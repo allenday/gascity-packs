@@ -388,6 +388,8 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     )
     if isinstance(documentation_branch, dict):
         action["commit_sha"] = documentation_branch["commit_sha"]
+    if updated.get("schema_version") == 3:
+        action["source_head_sha"] = _sha(updated["context"].get("default_branch_sha"), "source pull request head SHA")
     updated["actions"].append(action)
     updated["docs_prs_used"] += 1
     return updated, action
@@ -966,6 +968,15 @@ class GitHubCityBootstrapAdapter:
         owner, repo = _repository_parts(root)
         token = common.create_installation_token(self.app_config, str(_installation_id(root)))
         expected_base = str(action.get("base") or (root["context"]["default_branch"] if root.get("schema_version") == 3 else root["default_branch"]))
+        expected_source_head = str(action.get("source_head_sha") or "")
+        if expected_source_head:
+            pr_number = (root.get("context") or {}).get("pr_number")
+            if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+                raise ValueError("documentation PR source head check requires a pull request number")
+            source_pull = common.github_api_request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}", bearer_token=token)
+            current_head = str(((source_pull.get("head") or {}).get("sha") or "")).lower()
+            if current_head != _sha(expected_source_head, "documentation PR source head SHA"):
+                raise ValueError("source pull request changed before documentation follow-up projection")
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             if root.get("schema_version") in {2, 3}:
