@@ -51,6 +51,7 @@ Produce exactly one JSON object, with no Markdown fence or surrounding prose:
   },
   "documentation_branch": {
     "branch": "gas-city/<admitted-child-key>",
+    "commit_sha": "immutable 40-character commit SHA",
     "evidence": ["immutable commit or run evidence"]
   }
 }
@@ -65,7 +66,8 @@ You may prepare at most one App-owned documentation branch when the admitted
 blocking journey requires a bounded documentation change. Use only an App-owned
 branch and identity dedicated to this child. Do not write or push to an author
 or contributor branch. Do not open or merge a pull request: the journey
-controller creates or adopts the one PR only after it validates your branch and
-immutable evidence. Do not create a follow-on child or debt issue. If the change
+controller creates or adopts the one PR only after it validates your branch,
+commit, and immutable evidence. The worker never opens or merges a pull request.
+Do not create a follow-on child or debt issue. If the change
 is non-blocking, ambiguous, exceeds a budget, or needs product direction,
 return the appropriate blocked/complete update without creating a branch.

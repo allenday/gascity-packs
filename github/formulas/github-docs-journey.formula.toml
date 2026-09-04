@@ -143,9 +143,14 @@ Persist before projecting. Use `scripts/github_intake_docs_journey_commands.py
 project-until-settled --once --identity <journey-identity>` to converge only
 persisted intents through the configured GitHub App and City adapters. Dispatch
 the worker only when its child key appears in `worker_ready_children`: that
-means its App-owned issue, Bead, and Bead assignment are complete. A bounded
-non-convergence is an error, not permission to dispatch. Do not create
-resources directly from an unpersisted decision.
+means its direct City Bead and Bead assignment are complete. For a v3
+pull-request child, create no relay-only GitHub tracking issue. Every deferred
+persona-goal-documentation-type coverage cell instead gets exactly one
+App-owned, evidence-backed GitHub issue and no Bead or PR. Those issues are
+inert: only an explicit `activate-bud` command (or the configured activation
+label handler, which invokes that command with a new normalized context) may
+start another recursion. A bounded non-convergence is an error, not permission
+to dispatch. Do not create resources directly from an unpersisted decision.
 """
 
 [[steps]]
@@ -154,7 +159,7 @@ title = "Run the admitted child worker"
 needs = ["project"]
 description = """
 Dispatch `docs-journey` with one admitted child record only after its
-App-owned issue and assigned Bead have been durably projected. The worker's
+direct City Bead and assignment have been durably projected. The worker's
 input is the admitted child record, not the source request, event payload, or a
 new documentation-impact decision. It returns an IDD-compliant child update
 and may prepare at most one App-owned documentation branch with immutable
@@ -181,6 +186,12 @@ new worker work for recorded non-blocking debt. Immediately invoke
 the controller-created PR and any terminal-status action. Stop when the
 controller returns a terminal state or the current admitted child remains
 incomplete.
+
+An operator activates a deferred issue only through
+`scripts/github_intake_docs_journey_commands.py activate-bud --once --input
+<strict-json>` with the persisted parent identity, bud identity, and a new
+normalized context. Creating, updating, assigning, or replaying the issue is
+never activation.
 """
 
 [[steps]]

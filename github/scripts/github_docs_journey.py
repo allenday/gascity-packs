@@ -829,9 +829,42 @@ class GitHubCityBootstrapAdapter:
         return self._issue(root, action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
 
     def create_debt_issue(self, root: dict[str, Any], action: dict[str, Any], debt: dict[str, Any]) -> dict[str, Any]:
+        if root.get("schema_version") == 3:
+            return self._recursion_bud_issue(root, action, debt)
         cell = debt.get("coverage_cell")
         label = f" coverage cell {cell}" if isinstance(cell, str) else ""
         return self._issue(root, action, f"Documentation journey debt{label}: {debt['key'][:12]}", debt["evidence_paths"], debt)
+
+    def _recursion_bud_issue(self, root: dict[str, Any], action: dict[str, Any], bud: dict[str, Any]) -> dict[str, Any]:
+        """Create or adopt the human-facing, deliberately inert bud issue."""
+        owner, repo = _repository_parts(root)
+        token = common.create_installation_token(self.app_config, str(_installation_id(root)))
+        logical_id = str(action["id"])
+        existing = common.find_issue_by_logical_id_with_token(token, owner, repo, logical_id, self.app_login)
+        cell = str(bud.get("coverage_cell") or "unknown")
+        identity = bud.get("decision_identity") if isinstance(bud.get("decision_identity"), dict) else {}
+        path = bud.get("persona_goal_path") if isinstance(bud.get("persona_goal_path"), dict) else {}
+        heading = " · ".join(str(path.get(key) or "unknown") for key in ("role", "job", "documentation_entry_point"))
+        evidence = [str(item) for item in bud.get("evidence_paths", [])]
+        evidence_body = "\n".join(f"- `{item}`" for item in evidence)
+        body = "\n".join((
+            f"## Documentation coverage: {heading} · {cell}",
+            "", "This deferred coverage cell is inert until an explicit `activate-bud` command or approved activation label starts a new recursion.",
+            "", f"Bud identity: `{bud['key']}`.",
+            f"Coverage identity: `{identity.get('coverage_cell', cell)}`.",
+            "", "Current evidence:", evidence_body,
+        ))
+        if existing is None:
+            return common.create_issue_with_token(token, owner, repo, f"Documentation coverage: {cell}", body, logical_id)
+        number = existing.get("number") if isinstance(existing, dict) else None
+        if type(number) is int and number > 0:
+            evidence_id = f"{logical_id}:evidence:{hashlib.sha256(json.dumps(evidence, sort_keys=True).encode('utf-8')).hexdigest()}"
+            if common.find_issue_comment_by_logical_id_with_token(token, owner, repo, number, evidence_id, self.app_login) is None:
+                common.post_issue_comment(
+                    self.app_config, str(_installation_id(root)), owner, repo, str(number),
+                    "Current evidence replay:\n" + evidence_body + "\n\n" + common.github_logical_id_marker(evidence_id),
+                )
+        return existing
 
     def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str], provenance: dict[str, Any] | None = None) -> dict[str, Any]:
         owner, repo = _repository_parts(root)
@@ -1069,12 +1102,33 @@ def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) 
         _complete_action(action, resource)
         return
     if kind == "create_issue":
+        if root.get("schema_version") == 3:
+            # The child is already the City execution record.  Do not create a
+            # relay-only GitHub issue for a PR-context recursion.
+            resource = adapter.create_bead(root, action, child)
+            _complete_action(action, resource)
+            assert child is not None
+            # Preserve the staged action shape for restart-compatible v2
+            # readers.  This alias adopts the direct Bead rather than making
+            # another City work item.
+            _append_action(root, _action(_child_action_id(child, "create_bead"), "create_bead", child_key=child["key"]))
+            return
         resource = adapter.create_issue(root, action, child)
         _complete_action(action, resource)
         assert child is not None
         _append_action(root, _action(_child_action_id(child, "create_bead"), "create_bead", child_key=child["key"]))
         return
     if kind == "create_bead":
+        if root.get("schema_version") == 3:
+            assert child is not None
+            direct = next((item for item in root["actions"] if item.get("child_key") == child["key"]
+                           and item.get("kind") == "create_issue" and item.get("state") == "completed"), None)
+            resource = direct.get("resource") if isinstance(direct, dict) else None
+            if not isinstance(resource, dict):
+                raise ValueError("v3 create_bead alias requires the direct Bead resource")
+            _complete_action(action, resource)
+            _append_action(root, _action(_child_action_id(child, "assign_bead"), "assign_bead", child_key=child["key"]))
+            return
         resource = adapter.create_bead(root, action, child)
         _complete_action(action, resource)
         assert child is not None
@@ -1113,7 +1167,8 @@ def _action_debt(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]
             raise ValueError(f"recursion action references missing bud: {key!r}")
         return {"key": bud["identity"], "evidence_paths": bud["evidence_paths"],
                 "coverage_cell": bud["decision_identity"].get("coverage_cell"),
-                "decision_identity": copy.deepcopy(bud["decision_identity"])}
+                "decision_identity": copy.deepcopy(bud["decision_identity"]),
+                "persona_goal_path": copy.deepcopy(bud["persona_goal_path"])}
     key = action.get("debt_key")
     debt = next((item for item in root["debts"] if item.get("key") == key), None)
     if debt is None:

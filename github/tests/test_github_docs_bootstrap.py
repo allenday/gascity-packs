@@ -416,7 +416,8 @@ class DocsBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(retried["actions"][1]["state"], "completed")
         self.assertTrue(all(action["state"] == "completed" for action in completed["actions"]))
-        self.assertEqual(adapter.created["issue"], [issue_action["id"]])
+        self.assertEqual(adapter.created["issue"], [])
+        self.assertEqual(adapter.created["bead"], [issue_action["id"]])
         self.assertEqual(adapter.created["debt"], [bud_action["id"]])
 
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:

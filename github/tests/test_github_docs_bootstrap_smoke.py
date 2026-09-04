@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-from github_docs_bootstrap import begin_journey, new_journey, project_actions, reconcile_root, record_child_update
+from github_docs_bootstrap import admit_child, begin_journey, new_journey, project_actions, reconcile_root, record_child_update
 
 
 SHA = "a" * 40
@@ -101,6 +101,70 @@ class GraphAdapter:
 
 
 class DocsBootstrapSmokeTests(unittest.TestCase):
+    def test_v3_pr_child_projects_a_bead_without_a_relay_tracking_issue(self) -> None:
+        request = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:9:" + SHA,
+                        "url": "https://github.com/allenday/demo/pull/9",
+                        "docs_impact_source_key": "github-pr:17:9:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["install"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        decision = {
+            **docs_change_required(),
+            "coverage_cells": [{"identity": "install", "classification": "unmet",
+                                "evidence_paths": ["docs/install.md"]}],
+        }
+
+        root, action = begin_journey(request, decision, now=100)
+        assert root is not None and action is not None
+        adapter = GraphAdapter()
+        root = project_actions(root, adapter)
+        root = project_actions(root, adapter)
+        root = project_actions(root, adapter)
+
+        self.assertEqual(root["children"][0]["state"], "admitted")
+        self.assertEqual([kind for kind, _ in adapter.calls], ["bead", "assignment"])
+        self.assertFalse(any(kind in {"issue", "debt", "pr"} for kind, _ in adapter.calls))
+
+    def test_v3_deferred_cells_project_one_inert_issue_per_cell(self) -> None:
+        request = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:9:" + SHA,
+                        "url": "https://github.com/allenday/demo/pull/9",
+                        "docs_impact_source_key": "github-pr:17:9:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["install", "reference"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        decision = {
+            **docs_change_required(),
+            "coverage_cells": [
+                {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/install.md"]},
+                {"identity": "reference", "classification": "unmet", "evidence_paths": ["docs/reference.md"]},
+            ],
+        }
+
+        root = new_journey(request, now=100)
+        root["children_used"] = root["execution_budgets"]["max_children"]
+        root, _ = admit_child(root, decision, now=100)
+        adapter = GraphAdapter()
+        projected = project_actions(root, adapter)
+
+        self.assertEqual(len(projected["buds"]), 2)
+        self.assertEqual(projected["children"], [])
+        self.assertEqual([kind for kind, _ in adapter.calls], ["debt", "debt"])
+        self.assertFalse(any(kind in {"issue", "bead", "assignment", "pr"} for kind, _ in adapter.calls))
+
     def test_docs_index_journey_projects_one_child_pr_then_terminal(self) -> None:
         root, action = begin_journey(
             journey_request(documentation_index="docs/index.md"), docs_change_required(), now=101,

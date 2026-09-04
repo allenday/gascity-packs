@@ -158,6 +158,16 @@ class DocsJourneyFormulaTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self._assert_worker_operational_authority(invalid)
 
+    def test_v3_projection_is_direct_city_work_with_explicit_bud_activation(self) -> None:
+        formula = self._formula()
+        descriptions = "\n".join(step["description"] for step in formula["steps"])
+        prompt = self._worker_prompt()
+
+        self.assertIn("no relay-only GitHub tracking issue", descriptions)
+        self.assertIn("activate-bud", descriptions)
+        self.assertIn("commit_sha", prompt)
+        self.assertIn("never opens or merges a pull request", prompt.lower())
+
     def test_agent_metadata_is_rig_scoped_and_not_a_fallback(self) -> None:
         metadata = tomllib.loads((AGENT_ROOT / "agent.toml").read_text(encoding="utf-8"))
 
