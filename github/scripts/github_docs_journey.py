@@ -241,7 +241,8 @@ def _new_recursion(request: dict[str, Any], now: float) -> dict[str, Any]:
         "context": context,
         "persona_goal_path": path,
         "execution_budgets": budgets,
-        "coverage_cells": [],
+        "coverage_cells": _coverage_cells(request.get("coverage_cells")),
+        "coverage_results": [],
         "children": [],
         "buds": [],
         "actions": [],
@@ -267,7 +268,7 @@ def journey_request_matches(existing_journey: dict[str, Any], request: dict[str,
     except (KeyError, ValueError):
         return False
     if existing.get("schema_version") == 3:
-        fields = ("identity", "context", "persona_goal_path", "execution_budgets")
+        fields = ("identity", "context", "persona_goal_path", "coverage_cells", "execution_budgets")
         return all(existing.get(field) == candidate.get(field) for field in fields)
     if existing.get("schema_version") != 2:
         return False
@@ -490,6 +491,8 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
     if cells is not None:
         if not isinstance(cells, list) or not cells:
             return root, None
+        if {item.get("identity") for item in cells if isinstance(item, dict)} != {item["identity"] for item in root["coverage_cells"]} or len(cells) != len(root["coverage_cells"]):
+            return root, None
         actions: list[dict[str, Any]] = []
         active_selected = False
         for cell in cells:
@@ -502,9 +505,9 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
                 return root, None
             recorded_cell = {"identity": cell_id, "classification": classification,
                              "evidence_paths": sorted(set(paths))}
-            prior = next((item for item in root["coverage_cells"] if item.get("identity") == cell_id), None)
+            prior = next((item for item in root["coverage_results"] if item.get("identity") == cell_id), None)
             if prior is None:
-                root["coverage_cells"].append(recorded_cell)
+                root["coverage_results"].append(recorded_cell)
             elif prior != recorded_cell:
                 return root, None
             if classification == "sufficient":
@@ -613,6 +616,11 @@ def _reconcile_terminal(root: dict[str, Any], now: float) -> str | None:
     children = root["children"]
     if children and all(child.get("state") in _COMPLETE_CHILD_STATES for child in children):
         return "baseline-complete"
+    if root.get("schema_version") == 3:
+        # Active-work allocation is not a terminal condition.  The admitted
+        # child and all inert buds remain durable/replayable until a real
+        # completion, cancellation, stale snapshot, or elapsed-time outcome.
+        return None
     budgets = _execution_budgets(root)
     if (root["children_used"] >= budgets["max_children"] or root["docs_prs_used"] >= budgets["max_docs_prs"]
             or root["debt_issues_used"] >= budgets["max_debt_issues"]):
@@ -813,15 +821,21 @@ class GitHubCityBootstrapAdapter:
         return self._issue(root, action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
 
     def create_debt_issue(self, root: dict[str, Any], action: dict[str, Any], debt: dict[str, Any]) -> dict[str, Any]:
-        return self._issue(root, action, f"Documentation journey debt: {debt['key'][:12]}", debt["evidence_paths"])
+        cell = debt.get("coverage_cell")
+        label = f" coverage cell {cell}" if isinstance(cell, str) else ""
+        return self._issue(root, action, f"Documentation journey debt{label}: {debt['key'][:12]}", debt["evidence_paths"], debt)
 
-    def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str]) -> dict[str, Any]:
+    def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str], provenance: dict[str, Any] | None = None) -> dict[str, Any]:
         owner, repo = _repository_parts(root)
         token = common.create_installation_token(self.app_config, str(_installation_id(root)))
         existing = common.find_issue_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
             return existing
-        body = "\n".join((f"App-owned {_run_label(root).lower()} item.", "", "Evidence surfaces:", *(f"- `{path}`" for path in evidence_paths)))
+        lines = [f"App-owned {_run_label(root).lower()} item."]
+        if provenance and isinstance(provenance.get("coverage_cell"), str):
+            lines.extend(("", f"Coverage cell: `{provenance['coverage_cell']}`.", f"Bud identity: `{provenance['key']}`."))
+        lines.extend(("", "Evidence surfaces:", *(f"- `{path}`" for path in evidence_paths)))
+        body = "\n".join(lines)
         return common.create_issue_with_token(token, owner, repo, title, body, str(action["id"]))
 
     def create_bead(self, root: dict[str, Any], action: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
@@ -1083,7 +1097,9 @@ def _action_debt(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]
         bud = next((item for item in root["buds"] if item.get("identity") == key), None)
         if bud is None:
             raise ValueError(f"recursion action references missing bud: {key!r}")
-        return {"key": bud["identity"], "evidence_paths": bud["evidence_paths"]}
+        return {"key": bud["identity"], "evidence_paths": bud["evidence_paths"],
+                "coverage_cell": bud["decision_identity"].get("coverage_cell"),
+                "decision_identity": copy.deepcopy(bud["decision_identity"])}
     key = action.get("debt_key")
     debt = next((item for item in root["debts"] if item.get("key") == key), None)
     if debt is None:
@@ -1142,7 +1158,8 @@ def _copy_root(root: dict[str, Any]) -> dict[str, Any]:
         result["context"] = _context(result.get("context"))
         result["persona_goal_path"] = _persona_goal_path(result.get("persona_goal_path"))
         result["execution_budgets"] = _recursion_budgets(result.get("execution_budgets"))
-        for key in ("children", "buds", "coverage_cells", "actions", "visited_surfaces"):
+        result["coverage_cells"] = _coverage_cells(result.get("coverage_cells"))
+        for key in ("children", "buds", "coverage_results", "actions", "visited_surfaces"):
             if not isinstance(result.get(key), list):
                 raise ValueError(f"root {key} must be a list")
         for key in ("children_used", "docs_prs_used", "non_progress_count"):
@@ -1220,6 +1237,20 @@ def _recursion_budgets(value: Any) -> dict[str, int]:
             raise ValueError(f"budget {key} must be a positive integer")
         result[key] = item
     return result
+
+
+def _coverage_cells(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("coverage_cells must be a non-empty ordered list")
+    cells: list[dict[str, str]] = []
+    for item in value:
+        identity = item if isinstance(item, str) else item.get("identity") if isinstance(item, dict) else None
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError("coverage cell identity must be non-empty text")
+        cells.append({"identity": identity.strip()})
+    if len({item["identity"] for item in cells}) != len(cells):
+        raise ValueError("coverage cell identities must be unique")
+    return cells
 
 
 def _source(value: Any) -> dict[str, Any]:

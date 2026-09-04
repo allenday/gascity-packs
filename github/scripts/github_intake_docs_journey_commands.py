@@ -81,7 +81,7 @@ def start_or_admit(state_dir: str, payload: dict[str, Any], *, now: float | None
         admission = "sufficient"
     elif action.get("kind") == "create_issue":
         admission = "child-admitted"
-    elif action.get("kind") == "create_bud_issue":
+    elif action.get("kind") in {"create_bud_issue", "create_debt_issue"} and action.get("bud_identity") is not None:
         admission = "bud-recorded"
     else:
         admission = "human-review-required"
@@ -133,8 +133,11 @@ def activate_bud(state_dir: str, payload: dict[str, Any], *, now: float | None =
             "repository_id": old["context"]["repository_id"], "repository": old["context"]["repository"],
             "installation_id": old["context"]["installation_id"], "context": context,
             "persona_goal_path": old["persona_goal_path"], "execution_budgets": old["execution_budgets"],
+            "coverage_cells": [bud["decision_identity"]["coverage_cell"]],
         }
         fresh = new_journey(request, time.time() if now is None else now)
+        fresh["activation"] = {"bud_identity": bud_identity, "coverage_cell": bud["decision_identity"]["coverage_cell"],
+                               "parent_identity": old["identity"]}
         with store.lock(fresh["identity"]):
             if store.load(fresh["identity"]) is not None:
                 raise ValueError("activated recursion already exists")
