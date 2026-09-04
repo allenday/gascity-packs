@@ -500,8 +500,13 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
                 return root, None
             if not isinstance(paths, list) or not paths or any(not isinstance(path, str) or not path for path in paths):
                 return root, None
-            root["coverage_cells"].append({"identity": cell_id, "classification": classification,
-                                           "evidence_paths": sorted(set(paths))})
+            recorded_cell = {"identity": cell_id, "classification": classification,
+                             "evidence_paths": sorted(set(paths))}
+            prior = next((item for item in root["coverage_cells"] if item.get("identity") == cell_id), None)
+            if prior is None:
+                root["coverage_cells"].append(recorded_cell)
+            elif prior != recorded_cell:
+                return root, None
             if classification == "sufficient":
                 continue
             candidate = copy.deepcopy(decision)
