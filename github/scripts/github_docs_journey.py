@@ -494,8 +494,7 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
     # All results are validated before any durable state is changed.
     updated = copy.deepcopy(root)
     updated["coverage_results"] = normalized_cells
-    if any(cell["classification"] == "human-required" for cell in normalized_cells):
-        return _terminal(updated, "owner-review-required")
+    human_review_required = any(cell["classification"] == "human-required" for cell in normalized_cells)
     actions: list[dict[str, Any]] = []
     active_selected = False
     for cell in normalized_cells:
@@ -510,6 +509,8 @@ def _admit_recursion(root: dict[str, Any], decision: dict[str, Any], now: float)
         active_selected = active_selected or len(updated["children"]) > before
         if action is not None:
             actions.append(action)
+    if human_review_required:
+        return _terminal(updated, "owner-review-required")
     return updated, actions[0] if actions else None
 
 
@@ -584,6 +585,11 @@ def reconcile_root(root: dict[str, Any], now: float) -> tuple[dict[str, Any], li
         return updated, [action]
     pending = _pending(updated)
     if pending:
+        if updated.get("schema_version") == 3 and all(
+            action.get("kind") == "create_debt_issue" and "bud_identity" in action
+            for action in pending
+        ):
+            return updated, pending
         updated["non_progress_count"] += 1
         if updated["non_progress_count"] >= _execution_budgets(updated)["max_non_progress"]:
             updated, action = _terminal(updated, "budget-exhausted")

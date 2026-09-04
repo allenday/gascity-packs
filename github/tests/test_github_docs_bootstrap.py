@@ -289,6 +289,83 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(record["buds"], [])
         self.assertEqual(record["state"], "owner-review-required")
         self.assertEqual(action["kind"], "post_root_status")
+
+    def test_v3_human_required_cell_preserves_every_unmet_cell_disposition_in_declared_order(self) -> None:
+        request_value = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA,
+                        "url": "https://example.test/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["review", "install", "api"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        assessed = {**decision(), "coverage_cells": [
+            {"identity": "review", "classification": "human-required", "evidence_paths": ["docs/review.md"]},
+            {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/install.md"]},
+            {"identity": "api", "classification": "unmet", "evidence_paths": ["docs/api.md"]},
+        ]}
+
+        record, action = begin_journey(request_value, assessed, now=100)
+
+        assert record is not None and action is not None
+        self.assertEqual(record["state"], "owner-review-required")
+        self.assertEqual(action["kind"], "post_root_status")
+        self.assertEqual([child["evidence_paths"] for child in record["children"]], [["docs/install.md"]])
+        self.assertEqual([bud["evidence_paths"] for bud in record["buds"]], [["docs/api.md"]])
+        self.assertEqual(
+            [item["kind"] for item in record["actions"]],
+            ["create_issue", "create_debt_issue", "post_root_status"],
+        )
+
+    @mock.patch("github_docs_bootstrap.GitHubCityBootstrapAdapter")
+    @mock.patch("github_docs_bootstrap.common.load_effective_config")
+    @mock.patch("github_docs_bootstrap.time.time", return_value=102)
+    def test_v3_failed_bud_projection_retries_without_spending_execution_non_progress_budget(
+        self, now: mock.Mock, load_config: mock.Mock, adapter_class: mock.Mock,
+    ) -> None:
+        request_value = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA,
+                        "url": "https://example.test/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["deferred"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        root = new_journey(request_value, now=100)
+        root["children_used"] = root["execution_budgets"]["max_children"]
+        root, action = admit_child(root, {**decision(), "coverage_cells": [
+            {"identity": "deferred", "classification": "unmet", "evidence_paths": ["docs/deferred.md"]},
+        ]}, now=101)
+        assert action is not None
+        self.assertEqual(action["kind"], "create_debt_issue")
+        adapter = RecordingAdapter(fail_after={"debt"})
+        load_config.return_value = {"app": {"slug": "gas-city"}}
+        adapter_class.return_value = adapter
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = FileBootstrapStore(directory)
+            store.save(root)
+            first = project_configured_root(directory, root["identity"])
+            second = project_configured_root(directory, root["identity"])
+            adapter.fail_after.clear()
+            completed = project_configured_root(directory, root["identity"])
+
+        self.assertEqual(first["state"], "active")
+        self.assertEqual(second["state"], "active")
+        self.assertEqual([first["non_progress_count"], second["non_progress_count"]], [0, 0])
+        self.assertEqual(completed["actions"][0]["state"], "completed")
+        self.assertEqual(adapter.created["debt"], [action["id"]])
+
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
         journey = new_journey({
             **request(),
