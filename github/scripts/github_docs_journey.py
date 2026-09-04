@@ -531,21 +531,29 @@ def _normalize_coverage_assessment(root: dict[str, Any], cells: Any) -> list[dic
     if [item["identity"] for item in results] != declared:
         return None
     existing = root["coverage_results"]
-    return results if not existing or existing == results else None
+    if not existing:
+        return results
+    # Classification is immutable once recorded.  A later assessment may
+    # refresh only the evidence for that same declared cell.
+    if [item["identity"] for item in existing] != [item["identity"] for item in results]:
+        return None
+    if [item["classification"] for item in existing] != [item["classification"] for item in results]:
+        return None
+    return results if existing != results else None
 
 
 def _admit_recursion_from_normalized(root: dict[str, Any], normalized: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
     terminal = _admission_terminal(root, normalized, now)
     if terminal is not None:
         return _terminal(root, terminal)
-    key = _child_key(root["identity"], normalized["identity"], normalized["paths"])
     if normalized["journey_disposition"] == "non-blocking":
-        return _record_recursion_bud(root, normalized, key)
+        return _record_recursion_bud(root, normalized, _bud_key(root["identity"], normalized["identity"]))
+    key = _child_key(root["identity"], normalized["identity"], normalized["paths"])
     if any(child.get("key") == key for child in root["children"]) or any(path in root["visited_surfaces"] for path in normalized["paths"]):
         return root, None
     if (normalized["depth"] > root["execution_budgets"]["max_depth"] or root["children_used"] >= root["execution_budgets"]["max_children"]
             or root["docs_prs_used"] >= root["execution_budgets"]["max_docs_prs"]):
-        return _record_recursion_bud(root, normalized, key)
+        return _record_recursion_bud(root, normalized, _bud_key(root["identity"], normalized["identity"]))
     child = {"key": key, "identity": key, "state": "admitted", "depth": normalized["depth"],
              "snapshot_sha": root["context"]["default_branch_sha"], "decision_identity": normalized["identity"],
              "decision_digest": normalized["digest"], "evidence_paths": normalized["paths"],
@@ -559,8 +567,18 @@ def _admit_recursion_from_normalized(root: dict[str, Any], normalized: dict[str,
 
 
 def _record_recursion_bud(root: dict[str, Any], normalized: dict[str, Any], key: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    if any(bud.get("identity") == key for bud in root["buds"]):
-        return root, None
+    existing = next((bud for bud in root["buds"] if bud.get("identity") == key), None)
+    if existing is not None:
+        if existing.get("evidence_paths") == normalized["paths"]:
+            return root, None
+        existing["evidence_paths"] = normalized["paths"]
+        evidence_digest = hashlib.sha256(json.dumps(normalized["paths"], separators=(",", ":")).encode()).hexdigest()
+        action = _action(
+            f"docs-recursion-bud:{key}:update_evidence:{evidence_digest}", "update_bud_issue",
+            bud_identity=key, issue_action_id=f"docs-recursion-bud:{key}:create_debt_issue",
+        )
+        _append_action(root, action)
+        return root, action
     bud = {"identity": key, "state": "recorded", "context": copy.deepcopy(root["context"]),
            "persona_goal_path": copy.deepcopy(root["persona_goal_path"]),
            "decision_identity": normalized["identity"], "decision_digest": normalized["digest"],
@@ -835,11 +853,16 @@ class GitHubCityBootstrapAdapter:
         label = f" coverage cell {cell}" if isinstance(cell, str) else ""
         return self._issue(root, action, f"Documentation journey debt{label}: {debt['key'][:12]}", debt["evidence_paths"], debt)
 
+    def update_bud_issue(self, root: dict[str, Any], action: dict[str, Any], bud: dict[str, Any]) -> dict[str, Any]:
+        if root.get("schema_version") != 3:
+            raise ValueError("bud evidence updates require a v3 recursion")
+        return self._recursion_bud_issue(root, action, bud)
+
     def _recursion_bud_issue(self, root: dict[str, Any], action: dict[str, Any], bud: dict[str, Any]) -> dict[str, Any]:
         """Create or adopt the human-facing, deliberately inert bud issue."""
         owner, repo = _repository_parts(root)
         token = common.create_installation_token(self.app_config, str(_installation_id(root)))
-        logical_id = str(action["id"])
+        logical_id = str(action.get("issue_action_id") or action["id"])
         existing = common.find_issue_by_logical_id_with_token(token, owner, repo, logical_id, self.app_login)
         cell = str(bud.get("coverage_cell") or "unknown")
         identity = bud.get("decision_identity") if isinstance(bud.get("decision_identity"), dict) else {}
@@ -1101,6 +1124,11 @@ def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) 
         resource = adapter.create_debt_issue(root, action, debt)
         _complete_action(action, resource)
         return
+    if kind == "update_bud_issue":
+        debt = _action_debt(root, action)
+        resource = adapter.update_bud_issue(root, action, debt)
+        _complete_action(action, resource)
+        return
     if kind == "create_issue":
         if root.get("schema_version") == 3:
             # The child is already the City execution record.  Do not create a
@@ -1207,7 +1235,7 @@ def _pending(root: dict[str, Any]) -> list[dict[str, Any]]:
 def _is_v3_bud_action(root: dict[str, Any], action: dict[str, Any]) -> bool:
     return (
         root.get("schema_version") == 3
-        and action.get("kind") == "create_debt_issue"
+        and action.get("kind") in {"create_debt_issue", "update_bud_issue"}
         and "bud_identity" in action
     )
 
@@ -1412,4 +1440,10 @@ def _sha(value: Any, name: str) -> str:
 
 def _child_key(root_identity: str, decision_identity: dict[str, str], paths: list[str]) -> str:
     binding = {"root_identity": root_identity, "decision_identity": decision_identity, "evidence_paths": paths}
+    return hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _bud_key(root_identity: str, decision_identity: dict[str, str]) -> str:
+    """Return the stable identity of one deferred coverage cell, not its evidence."""
+    binding = {"root_identity": root_identity, "decision_identity": decision_identity}
     return hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

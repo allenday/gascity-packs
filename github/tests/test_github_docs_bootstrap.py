@@ -678,6 +678,57 @@ class DocsBootstrapTests(unittest.TestCase):
         find.assert_called_once_with("installation-token", "allenday", "demo", action["id"], "gas-city[bot]")
         self.assertEqual(create.call_args.args[-1], action["id"])
 
+    @mock.patch("github_docs_bootstrap.common.post_issue_comment", return_value={"id": 901})
+    @mock.patch("github_docs_bootstrap.common.find_issue_comment_by_logical_id_with_token", return_value=None)
+    @mock.patch("github_docs_bootstrap.common.create_issue_with_token")
+    @mock.patch("github_docs_bootstrap.common.find_issue_by_logical_id_with_token")
+    @mock.patch("github_docs_bootstrap.common.create_installation_token", return_value="installation-token")
+    def test_v3_settled_bud_issue_adopts_one_issue_and_updates_current_evidence_on_replay(
+        self, token: mock.Mock, find_issue: mock.Mock, create_issue: mock.Mock,
+        find_comment: mock.Mock, post_comment: mock.Mock,
+    ) -> None:
+        request_value = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA,
+                        "url": "https://github.com/allenday/demo/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["install"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        first = {**decision(), "coverage_cells": [
+            {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/first.md"]},
+        ]}
+        root = new_journey(request_value, now=100)
+        root["children_used"] = 1
+        root, create_action = admit_child(root, first, now=101)
+        assert create_action is not None
+        find_issue.return_value = None
+        create_issue.return_value = {"number": 71, "html_url": "https://github.com/allenday/demo/issues/71"}
+        adapter = GitHubCityBootstrapAdapter({"slug": "gas-city"})
+        settled = project_actions(root, adapter)
+
+        find_issue.return_value = {"number": 71, "html_url": "https://github.com/allenday/demo/issues/71"}
+        replay = {**decision(), "coverage_cells": [
+            {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/current.md"]},
+        ]}
+        updated, update_action = admit_child(settled, replay, now=102)
+        assert update_action is not None
+        projected = project_actions(updated, adapter)
+
+        self.assertEqual(len(projected["buds"]), 1)
+        self.assertEqual(projected["buds"][0]["evidence_paths"], ["docs/current.md"])
+        self.assertEqual(create_issue.call_count, 1)
+        self.assertEqual(find_issue.call_args_list[-1].args[3], create_action["id"])
+        self.assertEqual(post_comment.call_count, 1)
+        self.assertIn("docs/current.md", post_comment.call_args.args[5])
+        self.assertEqual(update_action["kind"], "update_bud_issue")
+        self.assertEqual(next(action for action in projected["actions"] if action["id"] == update_action["id"])["state"], "completed")
+
     @mock.patch("github_intake_service.run_subprocess")
     @mock.patch("github_intake_common.city_root", return_value="/ambient-city")
     def test_bead_restart_lookup_uses_configured_city_root_not_ambient_root(
