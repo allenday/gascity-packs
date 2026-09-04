@@ -1,0 +1,14 @@
+formula = "github-docs-recursion-direct-child"
+description = "Complete one admitted v3 documentation recursion child"
+
+[[steps]]
+id = "complete-direct-child"
+title = "Validate and publish an admitted child result"
+description = """
+Invoke `scripts/github_intake_docs_direct_child_complete.py --once --input
+<strict-json>` with exactly `identity` and a
+`github-docs-recursion-direct-child-update`. The update must echo the complete
+admitted child record and may contain only one gas-city branch, immutable
+40-character commit SHA, and non-empty evidence. The Pack controller persists
+the result and is the only publisher of the resulting follow-up PR.
+"""

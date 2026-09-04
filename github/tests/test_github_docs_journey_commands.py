@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
 from github_intake_docs_journey_commands import _strict_json_object, activate_bud, project_until_settled, record_update, start_or_admit
+from github_intake_docs_direct_child_complete import complete_direct_child
 
 
 SHA = "a" * 40
@@ -73,6 +74,33 @@ def decision() -> dict[str, object]:
 
 
 class DocsJourneyCommandTests(unittest.TestCase):
+    def test_direct_child_completion_requires_the_direct_contract_and_stages_one_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            v3_request = {
+                "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+                "context": {"kind": "github-pr", "key": "github-pr:17:9:" + SHA,
+                            "url": "https://github.com/allenday/demo/pull/9",
+                            "docs_impact_source_key": "github-pr:17:9:" + SHA,
+                            "default_branch": "main", "default_branch_sha": SHA},
+                "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                      "starting_context": "clone", "success_condition": "installed",
+                                      "documentation_entry_point": "README.md"},
+                "coverage_cells": ["install"],
+                "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                      "max_elapsed_seconds": 60, "max_non_progress": 1},
+            }
+            v3_decision = {**decision(), "coverage_cells": [{"identity": "install", "classification": "unmet", "evidence_paths": ["docs/install.md"]}]}
+            started = start_or_admit(directory, {"request": v3_request, "decision": v3_decision}, now=100)
+            journey = started["journey"]
+            child = journey["children"][0]
+            result = complete_direct_child(directory, {"identity": journey["identity"], "update": {
+                "schema_version": 1, "kind": "github-docs-recursion-direct-child-update",
+                "admitted_child": child, "state": "complete",
+                "documentation_branch": {"branch": "gas-city/direct-child", "commit_sha": SHA, "evidence": ["commit:" + SHA]},
+            }})
+
+        self.assertEqual(result["action"]["kind"], "create_docs_pr")
+        self.assertEqual(result["journey"]["children"][0]["state"], "complete")
     def test_activate_bud_creates_a_fresh_v3_record_only_for_its_recorded_identity(self) -> None:
         v3_request = {
             "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",

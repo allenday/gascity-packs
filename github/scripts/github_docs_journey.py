@@ -357,9 +357,7 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     admitted = update.get("admitted_child")
     if not isinstance(admitted, dict):
         return updated, None
-    child = next((item for item in updated["children"] if (
-        item.get("identity") == admitted.get("identity") if updated.get("schema_version") == 3 else _same_child_provenance(item, admitted)
-    )), None)
+    child = next((item for item in updated["children"] if _same_child_provenance(item, admitted)), None)
     if child is None or child.get("state") != "admitted":
         return updated, None
     state = update.get("state")
@@ -444,7 +442,9 @@ def _same_child_provenance(child: dict[str, Any], admitted: dict[str, Any]) -> b
     fields = (
         "snapshot_sha", "decision_identity", "decision_digest", "parent_issue_url", "evidence_paths",
     )
-    if "journey_identity" in child:
+    if "identity" in child:
+        fields += ("identity", "context", "persona_goal_path")
+    elif "journey_identity" in child:
         fields += ("journey_identity", "source_key", "source_url", "documentation_entry_point")
     else:
         fields += ("bootstrap_identity", "root_issue_url")
