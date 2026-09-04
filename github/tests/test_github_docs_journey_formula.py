@@ -194,6 +194,42 @@ class DocsJourneyFormulaTests(unittest.TestCase):
         self.assertIn("do not construct", normalized)
         self.assertIn("recursion", normalized)
 
+    def test_direct_agent_is_the_dedicated_city_worker_target(self) -> None:
+        metadata = tomllib.loads((DIRECT_AGENT_ROOT / "agent.toml").read_text(encoding="utf-8"))
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+
+        self.assertEqual(metadata["description"], "GitHub documentation recursion direct-child worker")
+        self.assertEqual(metadata["scope"], "rig")
+        self.assertFalse(metadata["fallback"])
+        self.assertIn("docs-recursion-direct-child", prompt)
+        self.assertIn("must never emit a\n`github-docs-journey-child-update`", prompt)
+        self.assertNotIn('"kind":"github-docs-journey-child-update"', prompt)
+
+    def test_direct_city_worker_persists_the_harvestable_result_before_closing(self) -> None:
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        normalized = " ".join(prompt.lower().split())
+
+        self.assertIn("github.docs_direct_child", prompt)
+        self.assertIn("github.docs_direct_child.result", prompt)
+        self.assertIn("bd update", normalized)
+        self.assertIn("--set-metadata", normalized)
+        self.assertIn("bd show", normalized)
+        self.assertIn("bd close", normalized)
+        self.assertRegex(
+            normalized,
+            r"github\.docs_direct_child\.result.*(?:re-read|read back|verify).*bd close",
+        )
+        self.assertIn("final response is not the durable result", normalized)
+
+    def test_direct_result_handoff_uses_the_pack_completion_cli(self) -> None:
+        formula = tomllib.loads(DIRECT_FORMULA_PATH.read_text(encoding="utf-8"))
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        contract = prompt + "\n" + "\n".join(step["description"] for step in formula["steps"])
+
+        self.assertIn("github.docs_direct_child.result", contract)
+        self.assertIn("github_intake_docs_direct_child_complete.py --once", contract)
+        self.assertIn("unchanged Pack-issued `admission`", contract)
+
 
 if __name__ == "__main__":
     unittest.main()

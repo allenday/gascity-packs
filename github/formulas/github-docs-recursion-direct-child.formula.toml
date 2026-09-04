@@ -25,12 +25,20 @@ id = "complete-direct-child"
 title = "Validate and publish an admitted child result"
 needs = ["admit-direct-child"]
 description = """
-Invoke `scripts/github_intake_docs_direct_child_complete.py --once --input
-<strict-json>` with exactly the unchanged Pack-issued `admission` and a
-`github-docs-recursion-direct-child-update`. The update must echo the complete
-admitted child record. A `complete` result must contain exactly one named
-gas-city branch, immutable 40-character commit SHA, and non-empty evidence;
-`blocked`, `failed`, and `cancelled` results must contain a null branch. The Pack controller persists
+Dispatch the Pack's dedicated `docs-recursion-direct-child` City worker with
+the admitted child stored under `github.docs_direct_child` Bead metadata. The
+worker must persist a `github-docs-recursion-direct-child-update` under the
+exact `github.docs_direct_child.result` metadata key and verify that durable
+write before closing the Bead. A final chat response is not a completion
+record, and a legacy `github-docs-journey-child-update` is not accepted.
+
+After the Bead is closed, parse and validate that result metadata, combine it
+with exactly the unchanged Pack-issued `admission`, and invoke
+`scripts/github_intake_docs_direct_child_complete.py --once --input
+<strict-json>`. The update must echo the complete admitted child record. A
+`complete` result must contain exactly one named gas-city branch, immutable
+40-character commit SHA, and non-empty evidence; `blocked`, `failed`, and
+`cancelled` results must contain a null branch. The Pack controller persists
 the result transactionally, makes an exact replay idempotent, rejects a changed
 replay, and is the only publisher of the resulting follow-up PR.
 """
