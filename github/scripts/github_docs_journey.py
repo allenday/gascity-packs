@@ -973,11 +973,9 @@ class GitHubCityBootstrapAdapter:
                 pull = existing
                 head, base = pull.get("head"), pull.get("base")
                 head_repo = head.get("repo") if isinstance(head, dict) else None
-                head_user = head.get("user") if isinstance(head, dict) else None
                 base_repo = base.get("repo") if isinstance(base, dict) else None
                 if (not isinstance(head, dict) or not head.get("ref") or not head.get("sha")
                         or not isinstance(head_repo, dict) or not head_repo.get("full_name")
-                        or not isinstance(head_user, dict) or not head_user.get("login")
                         or not isinstance(base, dict) or not base.get("ref")
                         or not isinstance(base_repo, dict) or not base_repo.get("full_name")):
                     number = pull.get("number")
@@ -988,15 +986,12 @@ class GitHubCityBootstrapAdapter:
                     )
                     head, base = pull.get("head"), pull.get("base")
                     head_repo = head.get("repo") if isinstance(head, dict) else None
-                    head_user = head.get("user") if isinstance(head, dict) else None
                     base_repo = base.get("repo") if isinstance(base, dict) else None
                 expected_repository = f"{owner}/{repo}".lower()
                 if (not isinstance(head, dict) or head.get("ref") != branch
                         or str(head.get("sha") or "").lower() != expected_sha
                         or not isinstance(head_repo, dict)
                         or str(head_repo.get("full_name") or "").lower() != expected_repository
-                        or not isinstance(head_user, dict)
-                        or str(head_user.get("login") or "").lower() != self.app_login.lower()
                         or not isinstance(base, dict) or base.get("ref") != expected_base
                         or not isinstance(base_repo, dict)
                         or str(base_repo.get("full_name") or "").lower() != expected_repository):

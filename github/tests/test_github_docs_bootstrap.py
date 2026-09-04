@@ -172,7 +172,7 @@ class DocsBootstrapTests(unittest.TestCase):
         existing = {
             "number": 10,
             "head": {"ref": "gas-city/install", "sha": SHA,
-                     "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}},
+                     "repo": {"full_name": "allenday/demo"}, "user": {"login": "allenday"}},
             "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}},
         }
         with mock.patch("github_docs_journey.common.create_installation_token", return_value="token"), mock.patch(
@@ -191,8 +191,7 @@ class DocsBootstrapTests(unittest.TestCase):
             {"head": {"ref": "gas-city/other", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
             {"head": {"ref": "gas-city/install", "sha": "b" * 40, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
             {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "main", "repo": {"full_name": "allenday/demo"}}},
-            {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "fork/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
-            {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "other"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
+            {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "fork/demo"}, "user": {"login": "fork"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
             {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "other/demo"}}},
         ]
         adapter = object.__new__(GitHubCityBootstrapAdapter)
@@ -213,7 +212,7 @@ class DocsBootstrapTests(unittest.TestCase):
         listed = {"number": 10}
         detailed = {
             "number": 10,
-            "head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}},
+            "head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "allenday"}},
             "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}},
         }
         adapter = object.__new__(GitHubCityBootstrapAdapter)
