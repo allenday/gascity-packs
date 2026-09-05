@@ -155,6 +155,19 @@ class DocsPatchWorkerTests(unittest.TestCase):
         self.assertEqual(validated["identity"], assignment()["identity"])
         self.assertEqual(validated["agent_skill"], "developer-experience-techdocs")
 
+    def test_assignment_accepts_v1_records_but_binds_v2_source_key_to_base_identity(self) -> None:
+        legacy = assignment()
+        self.assertEqual(worker.validate_assignment(legacy)["identity"]["source_key"], legacy["identity"]["source_key"])
+
+        v2 = assignment()
+        digest = hashlib.sha256(json.dumps({"base_ref": "main", "base_sha": "b" * 40}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        v2["identity"]["source_key"] = f"github-pr:v2:17:9:{SHA}:{digest}"
+        self.assertEqual(worker.validate_assignment(v2)["identity"]["source_key"], v2["identity"]["source_key"])
+
+        v2["evidence_bundle"]["proposal_identity"]["base_ref"] = "release"
+        with self.assertRaisesRegex(ValueError, "source_key"):
+            worker.validate_assignment(v2)
+
     def test_assignment_rejects_proposal_identity_for_another_revision(self) -> None:
         value = assignment()
         value["evidence_bundle"]["proposal_identity"]["head_sha"] = "c" * 40

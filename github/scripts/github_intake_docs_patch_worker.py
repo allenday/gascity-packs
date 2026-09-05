@@ -68,8 +68,6 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     if SHA_PATTERN.fullmatch(head_sha) is None:
         raise ValueError("identity.head_sha must be a lowercase 40-character SHA")
     source_key = _required_text(identity["source_key"], "identity.source_key")
-    if source_key != f"github-pr:{repository_id}:{pr_number}:{head_sha}":
-        raise ValueError("identity.source_key does not match assignment identity")
     evidence_bundle = value["evidence_bundle"]
     if (
         not isinstance(evidence_bundle, dict)
@@ -87,6 +85,10 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     for field, expected in (("repository_id", repository_id), ("repository", repository), ("pr_number", pr_number), ("head_sha", head_sha)):
         if proposal_identity[field] != expected:
             raise ValueError("evidence_bundle proposal identity must exactly match assignment identity")
+    if not docs_patch.source_key_matches_proposal_identity(source_key, {
+        "repository_id": repository_id, "pr_number": pr_number, "head_sha": head_sha,
+    }, proposal_identity):
+        raise ValueError("identity.source_key does not exactly bind assignment proposal identity")
     files: list[dict[str, str]] = []
     total_evidence_bytes = 0
     for item in evidence_bundle["files"]:

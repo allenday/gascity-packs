@@ -44,11 +44,35 @@ REVIEW_FIELDS_WITH_DIGEST = REVIEW_FIELDS | {"review_sha256"}
 REVIEW_IDENTITY_FIELDS = {"repository_id", "repository", "pr_number", "head_sha", "source_key"}
 REVIEW_EVIDENCE_FIELDS = {"path", "evidence"}
 REVIEW_VERDICTS = {"no-impact", "docs-sufficient", "docs-change-required", "proposal-ready", "inconclusive"}
+SOURCE_KEY_V2_PATTERN = re.compile(r"^github-pr:v2:([^:]+):(\d+):([0-9a-f]{40}):([0-9a-f]{64})$")
 
 
 def canonical_json(value: dict[str, Any]) -> str:
     """Render JSON deterministically for storage, digesting, and safe projection."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def github_pr_source_key_v2(
+    repository_id: str, pr_number: int, head_sha: str, proposal_identity: dict[str, Any],
+) -> str:
+    """Bind a new PR run to both its reviewed head and target revision."""
+    base_binding = canonical_json({
+        "base_sha": proposal_identity["base_sha"],
+        "base_ref": proposal_identity["base_ref"],
+    }).encode("utf-8")
+    return f"github-pr:v2:{repository_id}:{pr_number}:{head_sha}:{hashlib.sha256(base_binding).hexdigest()}"
+
+
+def source_key_matches_proposal_identity(
+    source_key: str, identity: dict[str, Any], proposal_identity: dict[str, Any],
+) -> bool:
+    """Accept readable v1 records; require exact target binding for new v2 keys."""
+    legacy = f"github-pr:{identity['repository_id']}:{identity['pr_number']}:{identity['head_sha']}"
+    if source_key == legacy:
+        return True
+    return source_key == github_pr_source_key_v2(
+        identity["repository_id"], identity["pr_number"], identity["head_sha"], proposal_identity,
+    )
 
 
 def _expect_object(value: Any, field: str) -> dict[str, Any]:
@@ -262,8 +286,8 @@ def _validate_review_identity(value: Any) -> dict[str, Any]:
         raise ValueError("identity.pr_number must be a positive integer")
     if GIT_SHA_PATTERN.fullmatch(normalized["head_sha"]) is None:
         raise ValueError("identity.head_sha must be a 40-character lowercase Git SHA")
-    expected_source = f"github-pr:{normalized['repository_id']}:{normalized['pr_number']}:{normalized['head_sha']}"
-    if normalized["source_key"] != expected_source:
+    legacy_source = f"github-pr:{normalized['repository_id']}:{normalized['pr_number']}:{normalized['head_sha']}"
+    if normalized["source_key"] != legacy_source and SOURCE_KEY_V2_PATTERN.fullmatch(normalized["source_key"]) is None:
         raise ValueError("identity.source_key does not match review identity")
     return normalized
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import shlex
@@ -1444,7 +1445,15 @@ def github_pr_context(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def github_pr_source_key(context: dict[str, str]) -> str:
-    return "github-pr:{repository_id}:{number}:{head_sha}".format(**context)
+    base_binding = json.dumps(
+        {"base_ref": context["base_ref"], "base_sha": context["base_sha"].lower()},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "github-pr:v2:{repository_id}:{number}:{head_sha}:{base_digest}".format(
+        **context, base_digest=hashlib.sha256(base_binding).hexdigest(),
+    )
 
 
 def github_event_env(event: str, delivery_id: str, payload: dict[str, Any], payload_file: str) -> dict[str, str]:
