@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import posixpath
+import re
 import tempfile
 import time
 import urllib.parse
@@ -357,9 +358,7 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     admitted = update.get("admitted_child")
     if not isinstance(admitted, dict):
         return updated, None
-    child = next((item for item in updated["children"] if (
-        item.get("identity") == admitted.get("identity") if updated.get("schema_version") == 3 else _same_child_provenance(item, admitted)
-    )), None)
+    child = next((item for item in updated["children"] if _same_child_provenance(item, admitted)), None)
     if child is None or child.get("state") != "admitted":
         return updated, None
     state = update.get("state")
@@ -389,6 +388,8 @@ def record_child_update(root: dict[str, Any], update: dict[str, Any]) -> tuple[d
     )
     if isinstance(documentation_branch, dict):
         action["commit_sha"] = documentation_branch["commit_sha"]
+    if updated.get("schema_version") == 3:
+        action["source_head_sha"] = _sha(updated["context"].get("default_branch_sha"), "source pull request head SHA")
     updated["actions"].append(action)
     updated["docs_prs_used"] += 1
     return updated, action
@@ -419,7 +420,7 @@ def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -
     branch = branch_update.get("branch")
     commit_sha = branch_update.get("commit_sha")
     evidence = branch_update.get("evidence")
-    if not isinstance(branch, str) or not branch.startswith("gas-city/"):
+    if not isinstance(branch, str) or not _valid_gas_city_branch(branch):
         return False, None
     if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
         return False, None
@@ -427,6 +428,18 @@ def _worker_documentation_branch(root: dict[str, Any], update: dict[str, Any]) -
         return True, {"branch": branch, "commit_sha": _sha(commit_sha, "documentation_branch.commit_sha"), "evidence": evidence}
     except ValueError:
         return False, None
+
+
+def _valid_gas_city_branch(branch: str) -> bool:
+    """Apply Git's ref-name constraints to the Pack-owned branch namespace."""
+    if not branch.startswith("gas-city/") or branch == "gas-city/" or branch.endswith(("/", ".")):
+        return False
+    if ".." in branch or "@{" in branch or "//" in branch:
+        return False
+    if any(ord(character) < 32 or ord(character) == 127 or character in " ~^:?*[\\" for character in branch):
+        return False
+    components = branch.split("/")
+    return all(component and not component.startswith(".") and not component.endswith(".lock") for component in components)
 
 
 def _documentation_pr_body(root: dict[str, Any], child: dict[str, Any]) -> str:
@@ -444,7 +457,9 @@ def _same_child_provenance(child: dict[str, Any], admitted: dict[str, Any]) -> b
     fields = (
         "snapshot_sha", "decision_identity", "decision_digest", "parent_issue_url", "evidence_paths",
     )
-    if "journey_identity" in child:
+    if "identity" in child:
+        fields += ("identity", "context", "persona_goal_path")
+    elif "journey_identity" in child:
         fields += ("journey_identity", "source_key", "source_url", "documentation_entry_point")
     else:
         fields += ("bootstrap_identity", "root_issue_url")
@@ -531,21 +546,29 @@ def _normalize_coverage_assessment(root: dict[str, Any], cells: Any) -> list[dic
     if [item["identity"] for item in results] != declared:
         return None
     existing = root["coverage_results"]
-    return results if not existing or existing == results else None
+    if not existing:
+        return results
+    # Classification is immutable once recorded.  A later assessment may
+    # refresh only the evidence for that same declared cell.
+    if [item["identity"] for item in existing] != [item["identity"] for item in results]:
+        return None
+    if [item["classification"] for item in existing] != [item["classification"] for item in results]:
+        return None
+    return results if existing != results else None
 
 
 def _admit_recursion_from_normalized(root: dict[str, Any], normalized: dict[str, Any], now: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
     terminal = _admission_terminal(root, normalized, now)
     if terminal is not None:
         return _terminal(root, terminal)
-    key = _child_key(root["identity"], normalized["identity"], normalized["paths"])
     if normalized["journey_disposition"] == "non-blocking":
-        return _record_recursion_bud(root, normalized, key)
+        return _record_recursion_bud(root, normalized, _bud_key(root["identity"], normalized["identity"]))
+    key = _child_key(root["identity"], normalized["identity"], normalized["paths"])
     if any(child.get("key") == key for child in root["children"]) or any(path in root["visited_surfaces"] for path in normalized["paths"]):
         return root, None
     if (normalized["depth"] > root["execution_budgets"]["max_depth"] or root["children_used"] >= root["execution_budgets"]["max_children"]
             or root["docs_prs_used"] >= root["execution_budgets"]["max_docs_prs"]):
-        return _record_recursion_bud(root, normalized, key)
+        return _record_recursion_bud(root, normalized, _bud_key(root["identity"], normalized["identity"]))
     child = {"key": key, "identity": key, "state": "admitted", "depth": normalized["depth"],
              "snapshot_sha": root["context"]["default_branch_sha"], "decision_identity": normalized["identity"],
              "decision_digest": normalized["digest"], "evidence_paths": normalized["paths"],
@@ -559,8 +582,18 @@ def _admit_recursion_from_normalized(root: dict[str, Any], normalized: dict[str,
 
 
 def _record_recursion_bud(root: dict[str, Any], normalized: dict[str, Any], key: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    if any(bud.get("identity") == key for bud in root["buds"]):
-        return root, None
+    existing = next((bud for bud in root["buds"] if bud.get("identity") == key), None)
+    if existing is not None:
+        if existing.get("evidence_paths") == normalized["paths"]:
+            return root, None
+        existing["evidence_paths"] = normalized["paths"]
+        evidence_digest = hashlib.sha256(json.dumps(normalized["paths"], separators=(",", ":")).encode()).hexdigest()
+        action = _action(
+            f"docs-recursion-bud:{key}:update_evidence:{evidence_digest}", "update_bud_issue",
+            bud_identity=key, issue_action_id=f"docs-recursion-bud:{key}:create_debt_issue",
+        )
+        _append_action(root, action)
+        return root, action
     bud = {"identity": key, "state": "recorded", "context": copy.deepcopy(root["context"]),
            "persona_goal_path": copy.deepcopy(root["persona_goal_path"]),
            "decision_identity": normalized["identity"], "decision_digest": normalized["digest"],
@@ -750,7 +783,7 @@ class FileBootstrapStore:
 
     def _path(self, identity: str) -> pathlib.Path:
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        directory = self.journeys_dir if identity.startswith("github-docs-journey:") else self.roots_dir
+        directory = self.journeys_dir if identity.startswith(("github-docs-journey:", "github-docs-recursion:")) else self.roots_dir
         return directory / f"{digest}.json"
 
     def load(self, identity: str) -> dict[str, Any] | None:
@@ -829,9 +862,47 @@ class GitHubCityBootstrapAdapter:
         return self._issue(root, action, f"{_run_label(root)}: {child['key'][:12]}", child["evidence_paths"])
 
     def create_debt_issue(self, root: dict[str, Any], action: dict[str, Any], debt: dict[str, Any]) -> dict[str, Any]:
+        if root.get("schema_version") == 3:
+            return self._recursion_bud_issue(root, action, debt)
         cell = debt.get("coverage_cell")
         label = f" coverage cell {cell}" if isinstance(cell, str) else ""
         return self._issue(root, action, f"Documentation journey debt{label}: {debt['key'][:12]}", debt["evidence_paths"], debt)
+
+    def update_bud_issue(self, root: dict[str, Any], action: dict[str, Any], bud: dict[str, Any]) -> dict[str, Any]:
+        if root.get("schema_version") != 3:
+            raise ValueError("bud evidence updates require a v3 recursion")
+        return self._recursion_bud_issue(root, action, bud)
+
+    def _recursion_bud_issue(self, root: dict[str, Any], action: dict[str, Any], bud: dict[str, Any]) -> dict[str, Any]:
+        """Create or adopt the human-facing, deliberately inert bud issue."""
+        owner, repo = _repository_parts(root)
+        token = common.create_installation_token(self.app_config, str(_installation_id(root)))
+        logical_id = str(action.get("issue_action_id") or action["id"])
+        existing = common.find_issue_by_logical_id_with_token(token, owner, repo, logical_id, self.app_login)
+        cell = str(bud.get("coverage_cell") or "unknown")
+        identity = bud.get("decision_identity") if isinstance(bud.get("decision_identity"), dict) else {}
+        path = bud.get("persona_goal_path") if isinstance(bud.get("persona_goal_path"), dict) else {}
+        heading = " · ".join(str(path.get(key) or "unknown") for key in ("role", "job", "documentation_entry_point"))
+        evidence = [str(item) for item in bud.get("evidence_paths", [])]
+        evidence_body = "\n".join(f"- `{item}`" for item in evidence)
+        body = "\n".join((
+            f"## Documentation coverage: {heading} · {cell}",
+            "", "This deferred coverage cell is inert until an explicit `activate-bud` command or approved activation label starts a new recursion.",
+            "", f"Bud identity: `{bud['key']}`.",
+            f"Coverage identity: `{identity.get('coverage_cell', cell)}`.",
+            "", "Current evidence:", evidence_body,
+        ))
+        if existing is None:
+            return common.create_issue_with_token(token, owner, repo, f"Documentation coverage: {cell}", body, logical_id)
+        number = existing.get("number") if isinstance(existing, dict) else None
+        if type(number) is int and number > 0:
+            evidence_id = f"{logical_id}:evidence:{hashlib.sha256(json.dumps(evidence, sort_keys=True).encode('utf-8')).hexdigest()}"
+            if common.find_issue_comment_by_logical_id_with_token(token, owner, repo, number, evidence_id, self.app_login) is None:
+                common.post_issue_comment(
+                    self.app_config, str(_installation_id(root)), owner, repo, str(number),
+                    "Current evidence replay:\n" + evidence_body + "\n\n" + common.github_logical_id_marker(evidence_id),
+                )
+        return existing
 
     def _issue(self, root: dict[str, Any], action: dict[str, Any], title: str, evidence_paths: list[str], provenance: dict[str, Any] | None = None) -> dict[str, Any]:
         owner, repo = _repository_parts(root)
@@ -892,12 +963,50 @@ class GitHubCityBootstrapAdapter:
         # A docs PR is only allowed from an explicit App-owned branch supplied
         # by the blocking worker; this controller never writes an author branch.
         branch = str(action.get("branch") or "")
-        if not branch.startswith("gas-city/"):
-            raise ValueError("create_docs_pr requires an App-owned gas-city/ branch")
+        if not _valid_gas_city_branch(branch):
+            raise ValueError("create_docs_pr requires a named App-owned gas-city/ branch")
         owner, repo = _repository_parts(root)
-        token = common.create_installation_token(self.app_config, str(root["installation_id"]))
+        token = common.create_installation_token(self.app_config, str(_installation_id(root)))
+        expected_base = str(action.get("base") or (root["context"]["default_branch"] if root.get("schema_version") == 3 else root["default_branch"]))
+        expected_source_head = str(action.get("source_head_sha") or "")
+        if expected_source_head:
+            pr_number = (root.get("context") or {}).get("pr_number")
+            if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+                raise ValueError("documentation PR source head check requires a pull request number")
+            source_pull = common.github_api_request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}", bearer_token=token)
+            current_head = str(((source_pull.get("head") or {}).get("sha") or "")).lower()
+            if current_head != _sha(expected_source_head, "documentation PR source head SHA"):
+                raise ValueError("source pull request changed before documentation follow-up projection")
         existing = common.find_pull_request_by_logical_id_with_token(token, owner, repo, str(action["id"]), self.app_login)
         if existing is not None:
+            if root.get("schema_version") in {2, 3}:
+                expected_sha = _sha(action.get("commit_sha"), "documentation branch commit_sha")
+                pull = existing
+                head, base = pull.get("head"), pull.get("base")
+                head_repo = head.get("repo") if isinstance(head, dict) else None
+                base_repo = base.get("repo") if isinstance(base, dict) else None
+                if (not isinstance(head, dict) or not head.get("ref") or not head.get("sha")
+                        or not isinstance(head_repo, dict) or not head_repo.get("full_name")
+                        or not isinstance(base, dict) or not base.get("ref")
+                        or not isinstance(base_repo, dict) or not base_repo.get("full_name")):
+                    number = pull.get("number")
+                    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                        raise ValueError("existing documentation PR lacks immutable provenance")
+                    pull = common.github_api_request(
+                        "GET", f"/repos/{owner}/{repo}/pulls/{number}", bearer_token=token,
+                    )
+                    head, base = pull.get("head"), pull.get("base")
+                    head_repo = head.get("repo") if isinstance(head, dict) else None
+                    base_repo = base.get("repo") if isinstance(base, dict) else None
+                expected_repository = f"{owner}/{repo}".lower()
+                if (not isinstance(head, dict) or head.get("ref") != branch
+                        or str(head.get("sha") or "").lower() != expected_sha
+                        or not isinstance(head_repo, dict)
+                        or str(head_repo.get("full_name") or "").lower() != expected_repository
+                        or not isinstance(base, dict) or base.get("ref") != expected_base
+                        or not isinstance(base_repo, dict)
+                        or str(base_repo.get("full_name") or "").lower() != expected_repository):
+                    raise ValueError("existing documentation PR does not match immutable provenance")
             return existing
         if root.get("schema_version") in {2, 3}:
             commit_sha = _sha(action.get("commit_sha"), "documentation branch commit_sha")
@@ -909,7 +1018,7 @@ class GitHubCityBootstrapAdapter:
             if str((ref.get("object") or {}).get("sha") or "").lower() != commit_sha:
                 raise ValueError("documentation branch does not match the admitted immutable commit")
         title = str(action.get("title") or f"{_run_label(root)} follow-up")
-        base = str(action.get("base") or (root["context"]["default_branch"] if root.get("schema_version") == 3 else root["default_branch"]))
+        base = expected_base
         body = str(action.get("body") or f"App-owned {_run_label(root).lower()} follow-up.")
         return common.create_pull_request(
             self.app_config, str(_installation_id(root)), owner, repo, title, branch, base,
@@ -1068,13 +1177,39 @@ def _project_action(root: dict[str, Any], action: dict[str, Any], adapter: Any) 
         resource = adapter.create_debt_issue(root, action, debt)
         _complete_action(action, resource)
         return
+    if kind == "update_bud_issue":
+        debt = _action_debt(root, action)
+        resource = adapter.update_bud_issue(root, action, debt)
+        _complete_action(action, resource)
+        return
     if kind == "create_issue":
+        if root.get("schema_version") == 3:
+            # The child is already the City execution record.  Do not create a
+            # relay-only GitHub issue for a PR-context recursion.
+            resource = adapter.create_bead(root, action, child)
+            _complete_action(action, resource)
+            assert child is not None
+            # Preserve the staged action shape for restart-compatible v2
+            # readers.  This alias adopts the direct Bead rather than making
+            # another City work item.
+            _append_action(root, _action(_child_action_id(child, "create_bead"), "create_bead", child_key=child["key"]))
+            return
         resource = adapter.create_issue(root, action, child)
         _complete_action(action, resource)
         assert child is not None
         _append_action(root, _action(_child_action_id(child, "create_bead"), "create_bead", child_key=child["key"]))
         return
     if kind == "create_bead":
+        if root.get("schema_version") == 3:
+            assert child is not None
+            direct = next((item for item in root["actions"] if item.get("child_key") == child["key"]
+                           and item.get("kind") == "create_issue" and item.get("state") == "completed"), None)
+            resource = direct.get("resource") if isinstance(direct, dict) else None
+            if not isinstance(resource, dict):
+                raise ValueError("v3 create_bead alias requires the direct Bead resource")
+            _complete_action(action, resource)
+            _append_action(root, _action(_child_action_id(child, "assign_bead"), "assign_bead", child_key=child["key"]))
+            return
         resource = adapter.create_bead(root, action, child)
         _complete_action(action, resource)
         assert child is not None
@@ -1113,7 +1248,8 @@ def _action_debt(root: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]
             raise ValueError(f"recursion action references missing bud: {key!r}")
         return {"key": bud["identity"], "evidence_paths": bud["evidence_paths"],
                 "coverage_cell": bud["decision_identity"].get("coverage_cell"),
-                "decision_identity": copy.deepcopy(bud["decision_identity"])}
+                "decision_identity": copy.deepcopy(bud["decision_identity"]),
+                "persona_goal_path": copy.deepcopy(bud["persona_goal_path"])}
     key = action.get("debt_key")
     debt = next((item for item in root["debts"] if item.get("key") == key), None)
     if debt is None:
@@ -1152,7 +1288,7 @@ def _pending(root: dict[str, Any]) -> list[dict[str, Any]]:
 def _is_v3_bud_action(root: dict[str, Any], action: dict[str, Any]) -> bool:
     return (
         root.get("schema_version") == 3
-        and action.get("kind") == "create_debt_issue"
+        and action.get("kind") in {"create_debt_issue", "update_bud_issue"}
         and "bud_identity" in action
     )
 
@@ -1226,6 +1362,17 @@ def _context(value: Any) -> dict[str, Any]:
     if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item.strip() for item in capabilities):
         raise ValueError("context projection_capabilities must be a list of text")
     result["projection_capabilities"] = sorted(set(capabilities))
+    if result["kind"] == "github-pr" and any(key in value for key in ("pr_number", "source_branch", "assignment_sha256", "candidate_sha256")):
+        pr_number = value.get("pr_number")
+        if type(pr_number) is not int or pr_number <= 0:
+            raise ValueError("context pr_number must be a positive integer")
+        result["pr_number"] = pr_number
+        result["source_branch"] = _required_text(value, "source_branch")
+        for key in ("assignment_sha256", "candidate_sha256"):
+            digest = value.get(key)
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ValueError(f"context {key} must be a SHA-256 digest")
+            result[key] = digest
     return result
 
 
@@ -1357,4 +1504,10 @@ def _sha(value: Any, name: str) -> str:
 
 def _child_key(root_identity: str, decision_identity: dict[str, str], paths: list[str]) -> str:
     binding = {"root_identity": root_identity, "decision_identity": decision_identity, "evidence_paths": paths}
+    return hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _bud_key(root_identity: str, decision_identity: dict[str, str]) -> str:
+    """Return the stable identity of one deferred coverage cell, not its evidence."""
+    binding = {"root_identity": root_identity, "decision_identity": decision_identity}
     return hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

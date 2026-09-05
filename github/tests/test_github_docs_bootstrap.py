@@ -124,6 +124,105 @@ class RecordingAdapter:
 
 
 class DocsBootstrapTests(unittest.TestCase):
+    def test_app_projection_rejects_the_bare_gas_city_branch_namespace(self) -> None:
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        with self.assertRaisesRegex(ValueError, "named App-owned"):
+            adapter.create_docs_pr(
+                {"schema_version": 3},
+                {"id": "pr", "branch": "gas-city/", "commit_sha": SHA},
+                None,
+            )
+
+    def test_app_projects_a_v3_direct_child_from_its_context_installation_and_source_branch(self) -> None:
+        root = {
+            "schema_version": 3,
+            "context": {
+                "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+                "kind": "github-pr", "key": "github-pr:17:9:" + SHA,
+                "url": "https://github.com/allenday/demo/pull/9",
+                "docs_impact_source_key": "github-pr:17:9:" + SHA,
+                "default_branch": "feature/install", "default_branch_sha": SHA,
+                "projection_capabilities": [],
+            },
+        }
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install",
+                  "commit_sha": SHA, "title": "Docs", "body": "Body"}
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}
+        adapter.app_login = "gas-city[bot]"
+        with mock.patch("github_docs_journey.common.create_installation_token", return_value="token") as token, mock.patch(
+            "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=None,
+        ), mock.patch(
+            "github_docs_journey.common.github_api_request", return_value={"object": {"sha": SHA}},
+        ), mock.patch(
+            "github_docs_journey.common.create_pull_request", return_value={"number": 10},
+        ) as create:
+            result = adapter.create_docs_pr(root, action, None)
+
+        self.assertEqual(result, {"number": 10})
+        token.assert_called_once_with(adapter.app_config, "91")
+        self.assertEqual(create.call_args.args[6], "feature/install")
+
+    def test_app_projection_adopts_the_existing_direct_child_pr_on_replay(self) -> None:
+        root = {"schema_version": 3, "context": {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91", "default_branch": "feature/install"}}
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install", "commit_sha": SHA}
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}
+        adapter.app_login = "gas-city[bot]"
+        existing = {
+            "number": 10,
+            "head": {"ref": "gas-city/install", "sha": SHA,
+                     "repo": {"full_name": "allenday/demo"}, "user": {"login": "allenday"}},
+            "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}},
+        }
+        with mock.patch("github_docs_journey.common.create_installation_token", return_value="token"), mock.patch(
+            "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=existing,
+        ), mock.patch("github_docs_journey.common.github_api_request") as ref, mock.patch(
+            "github_docs_journey.common.create_pull_request",
+        ) as create:
+            self.assertEqual(adapter.create_docs_pr(root, action, None), existing)
+        ref.assert_not_called()
+        create.assert_not_called()
+
+    def test_app_projection_rejects_an_adopted_pr_with_changed_provenance(self) -> None:
+        root = {"schema_version": 3, "context": {"repository_id": "17", "repository": "allenday/demo", "installation_id": "91", "default_branch": "feature/install"}}
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install", "commit_sha": SHA}
+        invalids = [
+            {"head": {"ref": "gas-city/other", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
+            {"head": {"ref": "gas-city/install", "sha": "b" * 40, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
+            {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "main", "repo": {"full_name": "allenday/demo"}}},
+            {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "fork/demo"}, "user": {"login": "fork"}}, "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}}},
+            {"head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "gas-city[bot]"}}, "base": {"ref": "feature/install", "repo": {"full_name": "other/demo"}}},
+        ]
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}; adapter.app_login = "gas-city[bot]"
+        for existing in invalids:
+            with self.subTest(existing=existing), mock.patch(
+                "github_docs_journey.common.create_installation_token", return_value="token"
+            ), mock.patch(
+                "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=existing
+            ), mock.patch("github_docs_journey.common.create_pull_request") as create:
+                with self.assertRaisesRegex(ValueError, "immutable provenance"):
+                    adapter.create_docs_pr(root, action, None)
+                create.assert_not_called()
+
+    def test_app_projection_fetches_full_existing_pr_before_adopting_it(self) -> None:
+        root = {"schema_version": 3, "context": {"repository": "allenday/demo", "installation_id": "91", "default_branch": "feature/install"}}
+        action = {"id": "direct-pr", "branch": "gas-city/install", "base": "feature/install", "commit_sha": SHA}
+        listed = {"number": 10}
+        detailed = {
+            "number": 10,
+            "head": {"ref": "gas-city/install", "sha": SHA, "repo": {"full_name": "allenday/demo"}, "user": {"login": "allenday"}},
+            "base": {"ref": "feature/install", "repo": {"full_name": "allenday/demo"}},
+        }
+        adapter = object.__new__(GitHubCityBootstrapAdapter)
+        adapter.app_config = {"slug": "gas-city"}; adapter.app_login = "gas-city[bot]"
+        with mock.patch("github_docs_journey.common.create_installation_token", return_value="token"), mock.patch(
+            "github_docs_journey.common.find_pull_request_by_logical_id_with_token", return_value=listed
+        ), mock.patch("github_docs_journey.common.github_api_request", return_value=detailed) as get:
+            self.assertEqual(adapter.create_docs_pr(root, action, None), listed)
+        get.assert_called_once_with("GET", "/repos/allenday/demo/pulls/10", bearer_token="token")
+
     def test_new_records_normalize_each_context_kind_to_the_single_recursion_contract(self) -> None:
         path = {
             "domain": "techdocs",
@@ -223,6 +322,24 @@ class DocsBootstrapTests(unittest.TestCase):
         self.assertEqual(action["kind"], "create_docs_pr")
         self.assertEqual(action["branch"], "gas-city/docs-recursion-default")
         self.assertEqual(action["base"], "main")
+
+    def test_v3_worker_completion_requires_full_admitted_child_provenance(self) -> None:
+        candidate = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA, "url": "https://example.test/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install", "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"},
+            "coverage_cells": ["default"], "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        root, _ = begin_journey(candidate, {**decision(), "coverage_cells": [{"identity": "default", "classification": "unmet", "evidence_paths": ["docs/guide.md"]}]}, now=100)
+        assert root is not None
+        child = root["children"][0]
+        update = {"schema_version": 1, "kind": "github-docs-recursion-child-update", "admitted_child": {"identity": child["identity"]}, "state": "complete", "documentation_branch": {"branch": "gas-city/direct", "commit_sha": SHA, "evidence": ["commit:" + SHA]}}
+
+        updated, action = record_child_update(root, update)
+
+        self.assertIsNone(action)
+        self.assertEqual(updated["children"][0]["state"], "admitted")
 
     def test_v3_adjacent_gap_records_a_bud_without_a_child_action(self) -> None:
         candidate = {
@@ -416,7 +533,8 @@ class DocsBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(retried["actions"][1]["state"], "completed")
         self.assertTrue(all(action["state"] == "completed" for action in completed["actions"]))
-        self.assertEqual(adapter.created["issue"], [issue_action["id"]])
+        self.assertEqual(adapter.created["issue"], [])
+        self.assertEqual(adapter.created["bead"], [issue_action["id"]])
         self.assertEqual(adapter.created["debt"], [bud_action["id"]])
 
     def test_new_journey_is_source_agnostic_and_uses_docs_entry_point(self) -> None:
@@ -676,6 +794,57 @@ class DocsBootstrapTests(unittest.TestCase):
         token.assert_called_once_with({"slug": "gas-city"}, "91")
         find.assert_called_once_with("installation-token", "allenday", "demo", action["id"], "gas-city[bot]")
         self.assertEqual(create.call_args.args[-1], action["id"])
+
+    @mock.patch("github_docs_bootstrap.common.post_issue_comment", return_value={"id": 901})
+    @mock.patch("github_docs_bootstrap.common.find_issue_comment_by_logical_id_with_token", return_value=None)
+    @mock.patch("github_docs_bootstrap.common.create_issue_with_token")
+    @mock.patch("github_docs_bootstrap.common.find_issue_by_logical_id_with_token")
+    @mock.patch("github_docs_bootstrap.common.create_installation_token", return_value="installation-token")
+    def test_v3_settled_bud_issue_adopts_one_issue_and_updates_current_evidence_on_replay(
+        self, token: mock.Mock, find_issue: mock.Mock, create_issue: mock.Mock,
+        find_comment: mock.Mock, post_comment: mock.Mock,
+    ) -> None:
+        request_value = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-pr", "key": "github-pr:17:42:" + SHA,
+                        "url": "https://github.com/allenday/demo/pull/42",
+                        "docs_impact_source_key": "github-pr:17:42:" + SHA,
+                        "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_path": {"domain": "techdocs", "role": "developer", "job": "install",
+                                  "starting_context": "clone", "success_condition": "installed",
+                                  "documentation_entry_point": "README.md"},
+            "coverage_cells": ["install"],
+            "execution_budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1,
+                                  "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        first = {**decision(), "coverage_cells": [
+            {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/first.md"]},
+        ]}
+        root = new_journey(request_value, now=100)
+        root["children_used"] = 1
+        root, create_action = admit_child(root, first, now=101)
+        assert create_action is not None
+        find_issue.return_value = None
+        create_issue.return_value = {"number": 71, "html_url": "https://github.com/allenday/demo/issues/71"}
+        adapter = GitHubCityBootstrapAdapter({"slug": "gas-city"})
+        settled = project_actions(root, adapter)
+
+        find_issue.return_value = {"number": 71, "html_url": "https://github.com/allenday/demo/issues/71"}
+        replay = {**decision(), "coverage_cells": [
+            {"identity": "install", "classification": "unmet", "evidence_paths": ["docs/current.md"]},
+        ]}
+        updated, update_action = admit_child(settled, replay, now=102)
+        assert update_action is not None
+        projected = project_actions(updated, adapter)
+
+        self.assertEqual(len(projected["buds"]), 1)
+        self.assertEqual(projected["buds"][0]["evidence_paths"], ["docs/current.md"])
+        self.assertEqual(create_issue.call_count, 1)
+        self.assertEqual(find_issue.call_args_list[-1].args[3], create_action["id"])
+        self.assertEqual(post_comment.call_count, 1)
+        self.assertIn("docs/current.md", post_comment.call_args.args[5])
+        self.assertEqual(update_action["kind"], "update_bud_issue")
+        self.assertEqual(next(action for action in projected["actions"] if action["id"] == update_action["id"])["state"], "completed")
 
     @mock.patch("github_intake_service.run_subprocess")
     @mock.patch("github_intake_common.city_root", return_value="/ambient-city")

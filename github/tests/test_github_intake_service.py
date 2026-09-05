@@ -96,7 +96,7 @@ class GitHubIntakeServiceTests(unittest.TestCase):
                 "number": 42,
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": "b" * 40},
                 "head": {"ref": "docs-impact", "sha": "a" * 40, "repo": {"id": 123, "full_name": "Owner/Repo"}},
             },
             "sender": {"login": "alice"},
@@ -114,7 +114,7 @@ class GitHubIntakeServiceTests(unittest.TestCase):
         self.assertEqual(env["GC_GITHUB_ITEM_NUMBER"], "42")
         self.assertEqual(env["GC_GITHUB_EVENT_PAYLOAD_FILE"], "/tmp/payload.json")
 
-    def test_github_pr_source_key_is_bound_to_immutable_head(self) -> None:
+    def test_github_pr_source_key_is_bound_to_immutable_head_and_base(self) -> None:
         payload = {
             "number": 42,
             "repository": {
@@ -126,7 +126,7 @@ class GitHubIntakeServiceTests(unittest.TestCase):
             "pull_request": {
                 "html_url": "https://github.com/owner/repo/pull/42",
                 "state": "open",
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": "b" * 40},
                 "head": {"ref": "docs-impact", "sha": "a" * 40, "repo": {"id": 123, "full_name": "Owner/Repo"}},
             },
         }
@@ -137,10 +137,11 @@ class GitHubIntakeServiceTests(unittest.TestCase):
         self.assertEqual(context["head_sha"], "a" * 40)
         self.assertEqual(context["head_repository_id"], "123")
         self.assertEqual(context["head_repository"], "owner/repo")
-        self.assertEqual(
-            service.github_pr_source_key(context),
-            "github-pr:123:42:" + "a" * 40,
-        )
+        base_binding = json.dumps({"base_ref": "main", "base_sha": "b" * 40}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(service.github_pr_source_key(context), "github-pr:v2:123:42:" + "a" * 40 + ":" + __import__("hashlib").sha256(base_binding).hexdigest())
+
+        retargeted = {**context, "base_ref": "release", "base_sha": "c" * 40}
+        self.assertNotEqual(service.github_pr_source_key(context), service.github_pr_source_key(retargeted))
 
     def test_service_bind_config_allows_explicit_container_tcp_listener(self) -> None:
         with mock.patch.dict(os.environ, {"GC_SERVICE_SOCKET": "", "GC_SERVICE_HOST": "0.0.0.0", "GC_SERVICE_PORT": "8080"}):

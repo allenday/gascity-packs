@@ -10,6 +10,8 @@ import unittest
 GITHUB_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FORMULA_PATH = GITHUB_ROOT / "formulas" / "github-docs-journey.formula.toml"
 AGENT_ROOT = GITHUB_ROOT / "agents" / "docs-journey"
+DIRECT_FORMULA_PATH = GITHUB_ROOT / "formulas" / "github-docs-recursion-direct-child.formula.toml"
+DIRECT_AGENT_ROOT = GITHUB_ROOT / "agents" / "docs-recursion-direct-child"
 
 
 class DocsJourneyFormulaTests(unittest.TestCase):
@@ -158,12 +160,80 @@ class DocsJourneyFormulaTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self._assert_worker_operational_authority(invalid)
 
+    def test_v3_projection_is_direct_city_work_with_explicit_bud_activation(self) -> None:
+        formula = self._formula()
+        descriptions = "\n".join(step["description"] for step in formula["steps"])
+        prompt = self._worker_prompt()
+
+        self.assertIn("no relay-only GitHub tracking issue", descriptions)
+        self.assertIn("activate-bud", descriptions)
+        self.assertIn("commit_sha", prompt)
+        self.assertIn("never opens or merges a pull request", prompt.lower())
+
     def test_agent_metadata_is_rig_scoped_and_not_a_fallback(self) -> None:
         metadata = tomllib.loads((AGENT_ROOT / "agent.toml").read_text(encoding="utf-8"))
 
         self.assertEqual(metadata["description"], "GitHub documentation journey worker")
         self.assertEqual(metadata["scope"], "rig")
         self.assertFalse(metadata["fallback"])
+
+    def test_direct_formula_exposes_pack_admission_before_completion(self) -> None:
+        formula = tomllib.loads(DIRECT_FORMULA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual([step["id"] for step in formula["steps"]], ["admit-direct-child", "complete-direct-child"])
+        admission, completion = [step["description"] for step in formula["steps"]]
+        self.assertIn("admit", admission.lower())
+        self.assertIn("assignment_bytes", admission)
+        self.assertIn("candidate", admission)
+        self.assertIn("context", admission)
+        self.assertIn("admission", completion)
+
+    def test_direct_agent_echoes_the_full_pack_issued_child_and_never_invents_provenance(self) -> None:
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        normalized = " ".join(prompt.lower().split())
+        self.assertIn("complete pack-issued `admitted_child` record", normalized)
+        self.assertIn("do not construct", normalized)
+        self.assertIn("recursion", normalized)
+
+    def test_direct_agent_is_the_dedicated_city_worker_target(self) -> None:
+        metadata = tomllib.loads((DIRECT_AGENT_ROOT / "agent.toml").read_text(encoding="utf-8"))
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+
+        self.assertEqual(metadata["description"], "GitHub documentation recursion direct-child worker")
+        self.assertEqual(metadata["scope"], "rig")
+        self.assertFalse(metadata["fallback"])
+        self.assertIn("docs-recursion-direct-child", prompt)
+        self.assertIn("must never emit a\n`github-docs-journey-child-update`", prompt)
+        self.assertNotIn('"kind":"github-docs-journey-child-update"', prompt)
+
+    def test_direct_agent_uses_the_vendored_techdocs_methodology(self) -> None:
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+
+        self.assertIn("skills/developer-experience-techdocs/SKILL.md", prompt)
+
+    def test_direct_city_worker_persists_the_harvestable_result_before_closing(self) -> None:
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        normalized = " ".join(prompt.lower().split())
+
+        self.assertIn("github.docs_direct_child", prompt)
+        self.assertIn("github.docs_direct_child.result", prompt)
+        self.assertIn("bd update", normalized)
+        self.assertIn("--set-metadata", normalized)
+        self.assertIn("bd show", normalized)
+        self.assertIn("bd close", normalized)
+        self.assertRegex(
+            normalized,
+            r"github\.docs_direct_child\.result.*(?:re-read|read back|verify).*bd close",
+        )
+        self.assertIn("final response is not the durable result", normalized)
+
+    def test_direct_result_handoff_uses_the_pack_completion_cli(self) -> None:
+        formula = tomllib.loads(DIRECT_FORMULA_PATH.read_text(encoding="utf-8"))
+        prompt = (DIRECT_AGENT_ROOT / "prompt.template.md").read_text(encoding="utf-8")
+        contract = prompt + "\n" + "\n".join(step["description"] for step in formula["steps"])
+
+        self.assertIn("github.docs_direct_child.result", contract)
+        self.assertIn("github_intake_docs_direct_child_complete.py --once", contract)
+        self.assertIn("unchanged Pack-issued `admission`", contract)
 
 
 if __name__ == "__main__":

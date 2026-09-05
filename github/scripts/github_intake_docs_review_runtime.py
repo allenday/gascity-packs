@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 import fcntl
 
+import github_intake_docs_patch as docs_patch
 import github_intake_docs_patch_worker as worker
 from github_docs_pr_review_lifecycle import Candidate, DocsReviewRun, Transition, begin, reconcile
 
@@ -124,8 +125,17 @@ def assignment_from_paginated_evidence(delivery: dict[str, Any], pages: list[lis
     files.sort(key=lambda item: item["path"])
     if len({item["path"] for item in files}) != len(files):
         raise ValueError("evidence paths must be unique")
-    identity = {"repository_id": repository_id, "repository": repository, "pr_number": pr_number, "head_sha": head_sha, "source_key": f"github-pr:{repository_id}:{pr_number}:{head_sha}"}
-    assignment = {"schema_version": 1, "kind": "github-pr-docs-impact-assignment", "identity": identity, "agent_skill": "developer-experience-techdocs", "evidence_bundle": {"head_sha": head_sha, "files": files, "proposal_identity": {"repository_id": repository_id, "repository": repository, "pr_number": pr_number, "base_sha": base_sha, "head_sha": head_sha, "head_repository_id": str(delivery.get("head_repository_id", repository_id)), "head_repository": str(delivery.get("head_repository", repository)), "base_ref": base_ref}}}
+    proposal_identity = {
+        "repository_id": repository_id, "repository": repository, "pr_number": pr_number,
+        "base_sha": base_sha, "head_sha": head_sha,
+        "head_repository_id": str(delivery.get("head_repository_id", repository_id)),
+        "head_repository": str(delivery.get("head_repository", repository)), "base_ref": base_ref,
+    }
+    identity = {
+        "repository_id": repository_id, "repository": repository, "pr_number": pr_number, "head_sha": head_sha,
+        "source_key": docs_patch.github_pr_source_key_v2(repository_id, pr_number, head_sha, proposal_identity),
+    }
+    assignment = {"schema_version": 1, "kind": "github-pr-docs-impact-assignment", "identity": identity, "agent_skill": "developer-experience-techdocs", "evidence_bundle": {"head_sha": head_sha, "files": files, "proposal_identity": proposal_identity}}
     return worker.validate_assignment(assignment)
 
 
@@ -247,7 +257,10 @@ def accept_candidate(store: FileDocsReviewStore, envelope: dict[str, Any], adapt
             store.save(record)
             _perform(store, adapter, record)
             return {"accepted": False, "reason": "legacy record cannot validate candidate"}
-        normalized = worker.validate_final_candidate(_proven_assignment_bytes(record), envelope)
+        if isinstance(envelope, dict) and envelope.get("schema_version") == 2:
+            normalized = worker.validate_direct_admission_candidate(_proven_assignment_bytes(record), envelope)
+        else:
+            normalized = worker.validate_final_candidate(_proven_assignment_bytes(record), envelope)
         store.audit_candidate(identity, normalized, now)
         if record["state"] in {"terminal", "stale"} or "candidate" in record:
             transition = reconcile(_model(record), now=now, head_is_current=adapter.head_is_current(copy.deepcopy(record)))

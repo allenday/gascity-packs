@@ -128,7 +128,48 @@ class DocsReviewRuntimeTests(unittest.TestCase):
         built = runtime.assignment_from_paginated_evidence(delivery, pages)
 
         self.assertEqual([item["path"] for item in built["evidence_bundle"]["files"]], ["README.md", "docs/guide.md"])
-        self.assertEqual(built["identity"]["source_key"], f"github-pr:17:9:{SHA}")
+        base_binding = json.dumps(
+            {"base_ref": "main", "base_sha": "b" * 40},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(
+            built["identity"]["source_key"],
+            f"github-pr:v2:17:9:{SHA}:{hashlib.sha256(base_binding).hexdigest()}",
+        )
+
+    def test_retargeted_pr_with_the_same_head_receives_a_distinct_v2_source_key(self) -> None:
+        first = {
+            "repository_id": "17", "repository": "example/docs", "pr_number": 9,
+            "head_sha": SHA, "base_sha": "b" * 40, "base_ref": "main",
+        }
+        retargeted = {**first, "base_sha": "c" * 40, "base_ref": "release"}
+        pages = [[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new\n"}]]
+
+        original = runtime.assignment_from_paginated_evidence(first, pages)
+        changed = runtime.assignment_from_paginated_evidence(retargeted, pages)
+
+        self.assertNotEqual(original["identity"]["source_key"], changed["identity"]["source_key"])
+
+    def test_retargeted_pr_with_the_same_head_persists_a_distinct_store_run(self) -> None:
+        first = {
+            "repository_id": "17", "repository": "example/docs", "pr_number": 9,
+            "head_sha": SHA, "base_sha": "b" * 40, "base_ref": "main",
+        }
+        retargeted = {**first, "base_sha": "c" * 40, "base_ref": "release"}
+        pages = [[{"filename": "docs/guide.md", "patch": "@@ -1 +1 @@\n-old\n+new\n"}]]
+
+        original = runtime.intake_delivery(
+            self.store, runtime.assignment_from_paginated_evidence(first, pages), self.adapter,
+            now=100, perform_actions=False,
+        )
+        changed = runtime.intake_delivery(
+            self.store, runtime.assignment_from_paginated_evidence(retargeted, pages), self.adapter,
+            now=101, perform_actions=False,
+        )
+
+        self.assertNotEqual(original["identity"], changed["identity"])
+        self.assertEqual(len(self.store.list_runs()), 2)
 
     def test_missing_binary_or_truncated_evidence_is_rejected_before_dispatch(self) -> None:
         delivery = {"repository_id": "17", "repository": "example/docs", "pr_number": 9, "head_sha": SHA, "base_sha": "b" * 40, "base_ref": "main"}
@@ -183,6 +224,31 @@ class DocsReviewRuntimeTests(unittest.TestCase):
         self.assertFalse(accepted["accepted"])
         self.assertEqual(self.store.load(run["identity"])["conclusion"], "action_required")
         self.assertEqual(self.adapter.actions, [("ensure_terminal_check", run["identity"])])
+
+    def test_runtime_accepts_and_preserves_the_trusted_v2_direct_admission_candidate(self) -> None:
+        source = assignment()
+        run = runtime.intake_delivery(self.store, source, self.adapter, now=100)
+        envelope = candidate(source, "docs-change-required")
+        envelope.update({
+            "schema_version": 2,
+            "persona_goal_path": {
+                "domain": "techdocs", "role": "developer", "job": "use the interface",
+                "starting_context": "a checkout", "success_condition": "the interface works",
+                "documentation_entry_point": "README.md",
+            },
+            "coverage_cells": [{
+                "identity": "developer:use-interface:how-to", "classification": "unmet",
+                "evidence_paths": ["docs/guide.md"],
+            }],
+        })
+
+        accepted = runtime.accept_candidate(self.store, envelope, self.adapter, now=101)
+
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(self.store.load(run["identity"])["candidate"], envelope | {
+            "artifact": accepted["run"]["candidate"]["artifact"],
+        })
+        self.assertEqual(accepted["run"]["candidate"]["schema_version"], 2)
 
     def test_deadline_completes_an_operational_failure_once(self) -> None:
         run = runtime.intake_delivery(self.store, assignment(), self.adapter, now=100, deadline_seconds=60)

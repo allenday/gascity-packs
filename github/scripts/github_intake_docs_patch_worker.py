@@ -68,8 +68,6 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     if SHA_PATTERN.fullmatch(head_sha) is None:
         raise ValueError("identity.head_sha must be a lowercase 40-character SHA")
     source_key = _required_text(identity["source_key"], "identity.source_key")
-    if source_key != f"github-pr:{repository_id}:{pr_number}:{head_sha}":
-        raise ValueError("identity.source_key does not match assignment identity")
     evidence_bundle = value["evidence_bundle"]
     if (
         not isinstance(evidence_bundle, dict)
@@ -87,6 +85,10 @@ def validate_assignment(value: Any) -> dict[str, Any]:
     for field, expected in (("repository_id", repository_id), ("repository", repository), ("pr_number", pr_number), ("head_sha", head_sha)):
         if proposal_identity[field] != expected:
             raise ValueError("evidence_bundle proposal identity must exactly match assignment identity")
+    if not docs_patch.source_key_matches_proposal_identity(source_key, {
+        "repository_id": repository_id, "pr_number": pr_number, "head_sha": head_sha,
+    }, proposal_identity):
+        raise ValueError("identity.source_key does not exactly bind assignment proposal identity")
     files: list[dict[str, str]] = []
     total_evidence_bytes = 0
     for item in evidence_bundle["files"]:
@@ -162,12 +164,13 @@ def _adapter_environment() -> dict[str, str]:
 
 
 def run_adapter(
-    assignment: dict[str, Any],
+    raw_assignment: bytes,
     adapter_command: str,
     skill_dir: pathlib.Path,
     timeout_seconds: float = 300.0,
 ) -> dict[str, Any] | None:
     """Return a completed adapter review, or None without inventing a result."""
+    assignment = load_assignment_bytes(raw_assignment)
     argv = _adapter_argv(adapter_command)
     if argv is None or timeout_seconds <= 0 or not (skill_dir / "SKILL.md").is_file():
         return None
@@ -189,9 +192,21 @@ def run_adapter(
     if result.returncode != 0 or not result.stdout or len(result.stdout.encode("utf-8")) > MAX_ADAPTER_OUTPUT_BYTES:
         return None
     try:
-        candidate = json.loads(result.stdout)
-        review = docs_patch.validate_review_decision(candidate)
+        output = json.loads(result.stdout)
     except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if isinstance(output, dict) and set(output) == {"artifact", "persona_goal_path", "coverage_cells"}:
+        try:
+            return validate_direct_admission_candidate(raw_assignment, {
+                "schema_version": 2,
+                "snapshot_sha256": hashlib.sha256(raw_assignment).hexdigest(),
+                **output,
+            })
+        except (TypeError, ValueError):
+            return None
+    try:
+        review = docs_patch.validate_review_decision(output)
+    except (TypeError, ValueError):
         return None
     if review["identity"] != assignment["identity"] or review["agent_skill"] != assignment["agent_skill"]:
         return None
@@ -206,8 +221,7 @@ def review_assignment_bytes(
     skill_dir: pathlib.Path,
     timeout_seconds: float = 300.0,
 ) -> dict[str, Any] | None:
-    assignment = load_assignment_bytes(raw)
-    return run_adapter(assignment, adapter_command, skill_dir, timeout_seconds)
+    return run_adapter(raw, adapter_command, skill_dir, timeout_seconds)
 
 
 def validate_final_candidate(raw_assignment: bytes, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +235,64 @@ def validate_final_candidate(raw_assignment: bytes, candidate: dict[str, Any]) -
     if review["verdict"] == "proposal-ready" and (review["proposal"] is None or review["proposal"]["identity"] != assignment["evidence_bundle"]["proposal_identity"]):
         raise ValueError("candidate proposal identity does not exactly match assignment")
     return {"schema_version": 1, "snapshot_sha256": candidate["snapshot_sha256"], "artifact": review}
+
+
+def validate_direct_admission_candidate(raw_assignment: bytes, candidate: dict[str, Any]) -> dict[str, Any]:
+    """Validate the classified v2 candidate required for direct admission."""
+    assignment = load_assignment_bytes(raw_assignment)
+    fields = {"schema_version", "snapshot_sha256", "artifact", "persona_goal_path", "coverage_cells"}
+    if not isinstance(candidate, dict) or set(candidate) != fields or candidate.get("schema_version") != 2:
+        raise ValueError("direct admission requires an exact v2 candidate")
+    assignment_digest = hashlib.sha256(raw_assignment).hexdigest()
+    if candidate.get("snapshot_sha256") != assignment_digest:
+        raise ValueError("direct admission candidate does not match the assignment bytes")
+    review = docs_patch.validate_agent_review(candidate.get("artifact"))
+    if review["identity"] != assignment["identity"] or review["agent_skill"] != assignment["agent_skill"]:
+        raise ValueError("direct admission candidate does not match the assignment")
+    if review["verdict"] != "docs-change-required" or review["proposal"] is not None:
+        raise ValueError("direct admission requires an unproposed docs-change-required review")
+
+    path = candidate.get("persona_goal_path")
+    path_fields = {"domain", "role", "job", "starting_context", "success_condition", "documentation_entry_point"}
+    if not isinstance(path, dict) or set(path) != path_fields or path.get("domain") != "techdocs":
+        raise ValueError("direct admission persona_goal_path is invalid")
+    for field in path_fields:
+        value = path.get(field)
+        if not isinstance(value, str) or not value or value.strip() != value:
+            raise ValueError(f"direct admission persona_goal_path.{field} must be canonical text")
+
+    supplied_cells = candidate.get("coverage_cells")
+    if not isinstance(supplied_cells, list) or not supplied_cells or len(supplied_cells) > 100:
+        raise ValueError("direct admission coverage_cells must be a non-empty bounded list")
+    assignment_paths = {item["path"] for item in assignment["evidence_bundle"]["files"]}
+    cells: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    for index, cell in enumerate(supplied_cells):
+        if not isinstance(cell, dict) or set(cell) != {"identity", "classification", "evidence_paths"}:
+            raise ValueError(f"coverage_cells[{index}] must have exact fields")
+        identity = cell.get("identity")
+        classification = cell.get("classification")
+        evidence_paths = cell.get("evidence_paths")
+        if not isinstance(identity, str) or not identity or identity.strip() != identity or identity in identities:
+            raise ValueError("coverage cell identities must be canonical and unique")
+        if classification not in {"sufficient", "unmet", "human-required"}:
+            raise ValueError("coverage cell classification is invalid")
+        if (not isinstance(evidence_paths, list) or not evidence_paths
+                or any(not isinstance(item, str) or not item or item.strip() != item for item in evidence_paths)
+                or evidence_paths != sorted(set(evidence_paths))
+                or not set(evidence_paths).issubset(assignment_paths)):
+            raise ValueError("coverage cell evidence_paths must be exact assignment paths")
+        identities.add(identity)
+        cells.append({"identity": identity, "classification": classification, "evidence_paths": list(evidence_paths)})
+    if not any(cell["classification"] == "unmet" for cell in cells):
+        raise ValueError("direct admission requires at least one unmet coverage cell")
+    return {
+        "schema_version": 2,
+        "snapshot_sha256": assignment_digest,
+        "artifact": review,
+        "persona_goal_path": dict(path),
+        "coverage_cells": cells,
+    }
 
 
 def write_artifact(artifact_file: pathlib.Path, candidate: dict[str, Any]) -> None:
@@ -290,7 +362,9 @@ def main() -> int:
         if review is None:
             print(docs_patch.canonical_json({"status": "unavailable"}))
             return 0
-        if review["verdict"] != "proposal-ready":
+        if review.get("schema_version") == 2:
+            candidate = validate_direct_admission_candidate(raw_assignment, review)
+        elif review["verdict"] != "proposal-ready":
             candidate = validate_final_candidate(raw_assignment, {"schema_version": 1, "snapshot_sha256": hashlib.sha256(raw_assignment).hexdigest(), "artifact": review})
         elif not args.workspace or not args.generated_at:
             print(docs_patch.canonical_json({"status": "unavailable"}))

@@ -1,0 +1,49 @@
+formula = "github-docs-recursion-direct-child"
+description = "Admit and complete one classified PR documentation recursion child"
+
+[[steps]]
+id = "admit-direct-child"
+title = "Validate and persist direct child admission"
+description = """
+Invoke `scripts/github_intake_docs_direct_child_admit.py --once --input
+<strict-json>` with exactly `assignment_bytes`, `candidate`, and `context`.
+`assignment_bytes` is the base64 encoding of the immutable sanitized reviewer
+assignment. The candidate must be schema v2 and carry the exact ordered
+`coverage_cells` classifications and `persona_goal_path`. The signed PR context
+must carry repository and repository_id, PR number, source key, reviewed head
+SHA, source branch, source URL, and installation id. The Pack cross-checks every
+duplicated identity field, persists the single recursion before returning, and
+returns its full `recursion_identity` plus the complete `admitted_child` record.
+Persist that response unchanged. Do not construct a recursion identity, child
+key, budget, classification, or provenance in the caller. The persisted direct
+child has no City projection intent: the caller dispatches exactly this child
+record once, while any deferred coverage buds remain ordinary issue intents.
+"""
+
+[[steps]]
+id = "complete-direct-child"
+title = "Validate and publish an admitted child result"
+needs = ["admit-direct-child"]
+description = """
+Dispatch the Pack's dedicated `docs-recursion-direct-child` City worker with
+the admitted child stored under `github.docs_direct_child` and the complete
+Pack-issued patch context under `github.docs_direct_child.patch_context` Bead
+metadata. The worker must echo both records exactly, use the controller-supplied immutable snapshot, make only
+documentation edits in a disposable copy, and generate its diff with Git. It
+must persist a `github-docs-recursion-direct-child-update` containing the
+resulting complete `documentation_patch` artifact under the exact
+`github.docs_direct_child.result` metadata key and verify that durable write
+before closing the Bead. A final chat response is not a completion record, and
+a legacy `github-docs-journey-child-update` is not accepted.
+
+After the Bead is closed, parse and validate that result metadata, combine it
+with exactly the unchanged Pack-issued `admission`, and invoke
+`scripts/github_intake_docs_direct_child_complete.py --once --input
+<strict-json>`. The update must echo the complete admitted child record. A
+A `complete` result must contain exactly one valid, SHA-bound,
+documentation-only patch artifact; `blocked`, `failed`, and `cancelled` results
+must contain a null artifact. The Pack controller persists the result
+transactionally, makes an exact replay idempotent, rejects a changed replay,
+and is the only component that applies the patch, commits, pushes, verifies the
+derived App-owned branch, and publishes the resulting follow-up PR.
+"""

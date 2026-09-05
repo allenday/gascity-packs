@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -18,6 +19,24 @@ from typing import Any, Callable, Protocol
 
 import github_intake_common as common
 import github_intake_docs_patch as docs_patch
+
+
+def verify_materialized_patch_files(checkout: pathlib.Path, proposal: dict[str, Any]) -> None:
+    """Require the applied worktree bytes to match every declared patch file."""
+    root = checkout.resolve()
+    for item in proposal["files"]:
+        path = root / str(item["path"])
+        try:
+            if path.is_symlink():
+                raise ValueError(f"materialized documentation file is a symlink: {item['path']!r}")
+            path.resolve().relative_to(root)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except (OSError, ValueError) as exc:
+            if "symlink" in str(exc):
+                raise
+            raise ValueError(f"could not verify materialized documentation file {item['path']!r}") from exc
+        if digest != item["sha256"]:
+            raise ValueError(f"materialized documentation file sha256 does not match {item['path']!r}")
 
 
 def _text(value: Any) -> str:
@@ -122,8 +141,15 @@ class AppProjection:
     def head_is_current(self, run: dict[str, Any]) -> bool:
         try:
             current = _pull_identity(self.gateway.pull_request(copy.deepcopy(run)))
-            expected = run["assignment"]["identity"]["head_sha"]
-            return current is not None and current["head_sha"] == expected
+            identity = run["assignment"]["identity"]
+            source_key = _text(identity["source_key"])
+            if current is None:
+                return False
+            if docs_patch.SOURCE_KEY_V2_PATTERN.fullmatch(source_key):
+                return source_key == docs_patch.github_pr_source_key_v2(
+                    current["repository_id"], current["pr_number"], current["head_sha"], current,
+                )
+            return current["head_sha"] == identity["head_sha"]
         except (KeyError, TypeError, ValueError):
             return False
 
@@ -342,6 +368,7 @@ class GitHubAppProjectionGateway:
             self._git(checkout, "apply", "--check", str(patch), env=git_env)
             self._git(checkout, "apply", str(patch), env=git_env)
             patch.unlink()
+            verify_materialized_patch_files(checkout, proposal)
             self._git(checkout, "checkout", "-b", branch, env=git_env)
             self._git(checkout, "config", "user.name", "Gas City", env=git_env)
             self._git(checkout, "config", "user.email", "gas-city[bot]@users.noreply.github.com", env=git_env)

@@ -1,0 +1,3 @@
+description = "GitHub documentation recursion direct-child worker"
+scope = "rig"
+fallback = false

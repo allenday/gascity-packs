@@ -170,6 +170,9 @@ def _worker_ready_children(journey: dict[str, Any]) -> list[str]:
             action for action in actions
             if isinstance(action, dict) and action.get("child_key") == key and action.get("kind") in required
         ]
+        # v3's ``create_bead`` action is a durable alias that adopts the
+        # direct Bead created by its initial action; it never creates a
+        # second City work item.
         if {str(action.get("kind")) for action in lifecycle} == required and all(action.get("state") == "completed" for action in lifecycle):
             ready.append(key)
     return ready
