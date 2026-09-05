@@ -56,9 +56,13 @@ gc github release-workflow owner/repo 42
 
 ## Documentation journeys
 
-Documentation traversal starts at a declared documentation index, or at
-`README.md` when no index is declared. A normalized source (an issue, a
-pull request, or an operator request) supplies provenance for a journey; an
+Documentation recursion starts with an immutable `context` (a pull request,
+an issue, or an operator request) and an ordered `coverage_cells` collection.
+Every new durable record uses the same fields: `identity`, `context`,
+`coverage_cells`, `execution_budgets`, `children`, `buds`, `actions`, and `state`.
+Every unresolved coverage cell becomes an inert evidence-backed bud unless it
+is selected for bounded active work; only explicit
+`activate-bud` with a new context creates a fresh recursion. A normalized source supplies provenance; an
 execution record is created automatically only when a blocking gap or a
 recorded debt requires durable external work. The command below supplies an
 explicit issue source and immutable default-branch snapshot:
@@ -91,7 +95,8 @@ the pack's vendored IDD and TechDocs skills. Every reader-journey field and
 budget is required; the formula intentionally has no defaults that could
 broaden scope.
 
-The controller can finish as `baseline-complete`, `owner-review-required`,
+Admission reports exactly one of `sufficient`, `human-review-required`,
+`child-admitted`, or `bud-recorded`. The controller can finish as `baseline-complete`, `owner-review-required`,
 `blocked-on-product-decision`, `budget-exhausted`, or `cancelled`. An admitted
 blocking child may yield at most one App-owned documentation pull request; it
 never writes to a contributor branch or merges. A non-blocking finding is

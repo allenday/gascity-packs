@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-from github_intake_docs_journey_commands import _strict_json_object, project_until_settled, record_update, start_or_admit
+from github_intake_docs_journey_commands import _strict_json_object, activate_bud, project_until_settled, record_update, start_or_admit
 
 
 SHA = "a" * 40
@@ -73,6 +73,40 @@ def decision() -> dict[str, object]:
 
 
 class DocsJourneyCommandTests(unittest.TestCase):
+    def test_activate_bud_creates_a_fresh_v3_record_only_for_its_recorded_identity(self) -> None:
+        v3_request = {
+            "repository_id": "17", "repository": "allenday/demo", "installation_id": "91",
+            "context": {"kind": "github-issue", "key": "github-issue:17:42", "url": "https://example.test/issues/42",
+                        "docs_impact_source_key": "github-pr:17:9:" + SHA, "default_branch": "main", "default_branch_sha": SHA},
+            "persona_goal_paths": [{"domain": "techdocs", "role": "developer", "job": "install",
+                                    "starting_context": "clone", "success_condition": "installed", "documentation_entry_point": "README.md"}],
+            "coverage_cells": ["default", "deferred"],
+            "budgets": {"max_depth": 1, "max_children": 1, "max_docs_prs": 1, "max_buds": 1,
+                        "max_elapsed_seconds": 60, "max_non_progress": 1},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            assessment = {**decision(), "coverage_cells": [{"identity": "default", "classification": "unmet", "evidence_paths": ["docs/install.md"]}, {"identity": "deferred", "classification": "unmet", "evidence_paths": ["docs/extra.md"]}]}
+            started = start_or_admit(directory, {"request": v3_request, "decision": assessment}, now=100)
+            old = started["journey"]
+            bud = old["buds"][0]
+            replay = start_or_admit(directory, {"request": v3_request, "decision": assessment}, now=101)
+            self.assertEqual(replay["journey"], old)
+            activated = activate_bud(directory, {
+                "identity": old["identity"], "bud_identity": bud["identity"],
+                "context": {**old["context"], "key": "operator-request:17:99", "kind": "operator-request", "url": "https://example.test/requests/99"},
+            }, now=101)
+            self.assertNotEqual(activated["journey"]["identity"], old["identity"])
+            self.assertEqual(activated["journey"]["context"]["kind"], "operator-request")
+            self.assertEqual(old["buds"][0]["state"], "recorded")
+
+    def test_activate_bud_requires_the_recorded_identity_and_a_new_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            budded = start_or_admit(directory, {"request": request(backfill_policy="record-debt"), "decision": {**decision(), "journey_disposition": "non-blocking"}}, now=100)
+            old = budded["journey"]
+            with self.assertRaisesRegex(ValueError, "bud was not found"):
+                activate_bud(directory, {"identity": old["identity"], "bud_identity": "wrong", "context": {}})
+            with self.assertRaisesRegex(ValueError, "new context"):
+                activate_bud(directory, {"identity": old["identity"], "bud_identity": old["debts"][0]["key"], "context": old["source"]})
     def test_project_until_settled_rejects_nonconvergent_pending_actions_at_its_bound(self) -> None:
         pending = {"state": "active", "actions": [{"id": "pending", "state": "pending"}], "children": []}
         with mock.patch("github_intake_docs_journey_commands.project_configured_journey", return_value=pending) as project:
