@@ -37,11 +37,19 @@ index 1111111..2222222 100644
     return {"schema_version": 1, "kind": "github-pr-docs-impact-review", "identity": {"repository_id": "17", "repository": "allenday/demo", "pr_number": 9, "head_sha": SHA, "source_key": f"github-pr:17:9:{SHA}"}, "agent_skill": "developer-experience-techdocs", "verdict": "proposal-ready", "rationale": "A bounded documentation patch is ready.", "evidence": [{"path": "docs/guide.md", "evidence": f"github://allenday/demo/blob/{SHA}/docs/guide.md"}], "confidence": 0.9, "proposal": proposal}
 
 
-def pull_request(*, head_repository: str = "allenday/demo", head_repository_id: str = "17", head_ref: str = "feature/docs", head_sha: str = SHA) -> dict[str, object]:
+def pull_request(
+    *,
+    head_repository: str = "allenday/demo",
+    head_repository_id: str = "17",
+    head_ref: str = "feature/docs",
+    head_sha: str = SHA,
+    base_sha: str = "b" * 40,
+    base_ref: str = "main",
+) -> dict[str, object]:
     return {
         "number": 9,
         "head": {"sha": head_sha, "ref": head_ref, "repo": {"id": head_repository_id, "full_name": head_repository}},
-        "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": "17", "full_name": "allenday/demo"}},
+        "base": {"sha": base_sha, "ref": base_ref, "repo": {"id": "17", "full_name": "allenday/demo"}},
     }
 
 
@@ -190,6 +198,40 @@ class DocsImpactProjectionTests(unittest.TestCase):
 
         self.assertEqual(gateway.check[0], "action_required")
         self.assertEqual(gateway.check[1]["title"], "Documentation impact: stale revision")
+
+    def test_v2_terminal_projection_rejects_a_retargeted_pr_with_the_same_head(self) -> None:
+        class Gateway:
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                return pull_request(base_sha="c" * 40, base_ref="release")
+            def ensure_check(self, run: dict[str, object], conclusion: str, output: dict[str, str]) -> None:
+                self.check = (conclusion, output)
+
+        assignment_identity = review()["identity"]
+        assignment_identity["source_key"] = impact.docs_patch.github_pr_source_key_v2(
+            "17", 9, SHA, review()["proposal"]["identity"],
+        )
+        candidate = review()
+        candidate["verdict"] = "docs-sufficient"
+        candidate["proposal"] = None
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = Gateway()
+            run = {
+                "identity": "run", "external_id": "docs-impact:run", "conclusion": "success",
+                "assignment": {"identity": assignment_identity}, "candidate": {"artifact": candidate},
+            }
+            impact.AppProjection(runtime.FileDocsReviewStore(directory), gateway).perform("ensure_terminal_check", run)
+
+        self.assertEqual(gateway.check[0], "action_required")
+        self.assertEqual(gateway.check[1]["title"], "Documentation impact: stale revision")
+
+    def test_v1_currentness_remains_head_only_after_a_retarget(self) -> None:
+        class Gateway:
+            def pull_request(self, run: dict[str, object]) -> dict[str, object]:
+                return pull_request(base_sha="c" * 40, base_ref="release")
+
+        run = {"assignment": {"identity": review()["identity"]}}
+
+        self.assertTrue(impact.AppProjection(None, Gateway()).head_is_current(run))
 
     def test_concrete_gateway_rechecks_head_before_followup_post(self) -> None:
         gateway = impact.GitHubAppProjectionGateway({}, "1")

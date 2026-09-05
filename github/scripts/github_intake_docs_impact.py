@@ -141,8 +141,15 @@ class AppProjection:
     def head_is_current(self, run: dict[str, Any]) -> bool:
         try:
             current = _pull_identity(self.gateway.pull_request(copy.deepcopy(run)))
-            expected = run["assignment"]["identity"]["head_sha"]
-            return current is not None and current["head_sha"] == expected
+            identity = run["assignment"]["identity"]
+            source_key = _text(identity["source_key"])
+            if current is None:
+                return False
+            if docs_patch.SOURCE_KEY_V2_PATTERN.fullmatch(source_key):
+                return source_key == docs_patch.github_pr_source_key_v2(
+                    current["repository_id"], current["pr_number"], current["head_sha"], current,
+                )
+            return current["head_sha"] == identity["head_sha"]
         except (KeyError, TypeError, ValueError):
             return False
 
